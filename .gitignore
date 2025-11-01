@@ -61,8 +61,17 @@ logs/
 # Testing
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
 .tox/
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_tmp/
+bandit-report.json
+safety-report.json
+test-results/
+junit.xml
 
 # Distribution / packaging
 .Python
