@@ -128,21 +128,15 @@ def truncate_key(key: str, head: int = 6, tail: int = 4) -> str:
 
 app = Flask(__name__)
 
-# Initialize production infrastructure
+# Initialize storage and audit logging
 try:
-    config_obj = get_config()
-    storage = init_storage(
-        host=config_obj.REDIS_HOST,
-        port=config_obj.REDIS_PORT,
-        db=config_obj.REDIS_DB,
-        password=config_obj.REDIS_PASSWORD
-    )
-    audit = init_audit_logger(config_obj.AUDIT_LOG_FILE)
-    logger.info("✅ Redis storage and audit logging initialized")
+    init_storage()
+    init_audit_logger()
+    CFG = get_config()
+    logger.info("✅ Storage, audit logging, and config initialized")
 except Exception as e:
-    logger.error(f"❌ Failed to initialize storage: {e}")
-    storage = None
-    audit = None
+    logger.error(f"❌ Failed to initialize infrastructure: {e}")
+    CFG = get_config()  # Still load config even if init fails
 
 app.secret_key = FLASK_SECRET_KEY
 socketio = SocketIO(app, cors_allowed_origins=SOCKETIO_CORS)
@@ -197,6 +191,24 @@ OAUTH_PUBLIC_PATHS = (
     '/oauth/register', '/oauth/authorize', '/oauth/token',
     '/oauthx/status', '/oauthx/docs'
 )
+
+# ============================================================================
+# HEALTH CHECK ENDPOINT
+# ============================================================================
+
+@app.route('/health')
+def health():
+    """
+    Basic health check endpoint.
+
+    Returns JSON indicating service status.
+    Used by Docker healthcheck and monitoring systems.
+    """
+    return jsonify({
+        "status": "ok",
+        "service": "HODLXXI",
+        "version": "1.0.0-alpha"
+    }), 200
 
 @app.before_request
 def _oauth_public_allowlist():
@@ -2593,6 +2605,9 @@ async function legacyVerify(){
     const r=await fetch('/verify_signature',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({pubkey,signature,challenge})});
     const d=await r.json();
+    // NOTE: access_level in response is for UI hints only.
+    // DO NOT treat this as an authorization boundary.
+    // All actual authorization happens server-side via session validation.
     if(r.ok&&d.verified){sessionStorage.setItem('playLoginSound','1'); window.location.href='/chat';}
     else{st.textContent=d.error||'Failed';}
   }catch(e){st.textContent='Network error';}
@@ -4283,9 +4298,11 @@ function verifyAndListContracts(clickedPubKey = null) {
     alert('Please enter a public key');
     return;
   }
-  if (!(/^(npub[0-9A-Za-z]+)$/.test(pubKey)) &&
-      !(/^[0-9a-fA-F]{66,130}$/.test(pubKey))) {
-    alert('Invalid public key format.');
+  // Validate public key format: Nostr npub or hex
+  const isNpub = pubKey.startsWith("npub") && pubKey.length >= 10;
+  const isHex = /^[0-9a-fA-F]{66,130}$/.test(pubKey);
+  if (!isNpub && !isHex) {
+    alert('Invalid public key format. Please enter a Nostr npub or hex public key.');
     return;
   }
   showLoading();

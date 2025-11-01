@@ -1,6 +1,18 @@
 # HODLXXI - Universal Bitcoin Identity Layer
 
-> A production-ready Bitcoin API combining OAuth2/OpenID Connect with Lightning Network authentication
+> A production-intended Bitcoin API combining OAuth2/OpenID Connect with Lightning Network authentication
+
+## ⚠️ ALPHA WARNING
+
+**This software is in active development and should be considered ALPHA quality.**
+
+- ⚠️ **NO CUSTODY**: This system never holds or controls user funds. All operations are non-custodial.
+- ⚠️ **DO NOT TRUST WITH FUNDS**: Use only with watch-only wallets for testing and development.
+- ⚠️ **API SURFACE WILL CHANGE**: Endpoints, request/response formats, and authentication flows may change without notice.
+- ⚠️ **SECURITY REVIEW ONGOING**: This code has not undergone formal security audit. Do not use in production without thorough review.
+- ⚠️ **TEST ENVIRONMENT ONLY**: Intended for development, testing, and experimentation on testnet/regtest.
+
+**For production use**: Wait for v1.0 stable release after security audit completion.
 
 <div align="center">
 
@@ -41,15 +53,15 @@
 
 ## 🌟 Overview
 
-HODLXXI is a **universal Bitcoin identity layer** that bridges Web2 and Web3 authentication systems. It provides a comprehensive API for building Bitcoin-powered applications with enterprise-grade security, combining traditional OAuth2/OIDC authentication with Lightning Network's LNURL-Auth protocol.
+HODLXXI is a **universal Bitcoin identity layer** that bridges Web2 and Web3 authentication systems. It provides a comprehensive API for building Bitcoin-powered applications with security-focused design, combining traditional OAuth2/OIDC authentication with Lightning Network's LNURL-Auth protocol.
 
 ### Why HODLXXI?
 
 - **🔐 Universal Authentication**: Support both traditional OAuth2 and Lightning Network authentication in one system
 - **⚡ Lightning Integration**: Native LNURL-Auth (LUD-04) support for seamless Lightning wallet authentication
 - **🔒 Non-Custodial**: Never store or control user private keys - cryptographic verification only
-- **🛡️ Enterprise Security**: Production-ready with rate limiting, signature verification, and comprehensive audit logging
-- **📊 Production Ready**: Battle-tested with 95%+ test coverage, monitoring, and observability built-in
+- **🛡️ Security-Focused**: Design emphasizes rate limiting, signature verification, and audit logging capabilities
+- **📊 Alpha Quality**: Under active development with test coverage in progress
 - **🚀 Developer Friendly**: 190+ KB of comprehensive documentation with examples
 
 ---
@@ -59,11 +71,10 @@ HODLXXI is a **universal Bitcoin identity layer** that bridges Web2 and Web3 aut
 ### Authentication & Authorization
 
 - **🔐 OAuth2/OpenID Connect Provider**
-  - Authorization code flow with PKCE support
-  - Token refresh mechanism with rotation
-  - Discovery endpoint (`/.well-known/openid-configuration`)
-  - JWKS endpoint for key verification
+  - Authorization code flow (basic implementation)
+  - Discovery endpoint (`/.well-known/openid-configuration`) - *planned*
   - Support for `openid`, `profile`, and `email` scopes
+  - **Roadmap**: PKCE support, token refresh with rotation, JWKS endpoint
 
 - **⚡ LNURL-Auth Integration (LUD-04)**
   - Lightning Network authentication
@@ -104,20 +115,17 @@ HODLXXI is a **universal Bitcoin identity layer** that bridges Web2 and Web3 aut
 
 ### Security & Monitoring
 
-- **🛡️ Enterprise Security**
-  - Configurable rate limiting per endpoint
-  - CORS and CSRF protection
-  - Encrypted session management
-  - TLS/SSL enforcement
-  - Comprehensive audit logging
+- **🛡️ Security Features**
+  - CORS configuration support
+  - Session management
   - Input validation and sanitization
+  - Signature verification for Bitcoin/Lightning operations
+  - **Roadmap**: Comprehensive rate limiting, CSRF protection, TLS enforcement, formal audit logging
 
 - **📊 Observability**
-  - Prometheus metrics endpoint
-  - Health check endpoint
+  - Health check endpoint (basic)
   - Request/response logging
-  - Performance metrics
-  - Error tracking
+  - **Roadmap**: Prometheus metrics endpoint, performance metrics, error tracking dashboard
 
 ---
 
@@ -144,36 +152,67 @@ HODLXXI is a **universal Bitcoin identity layer** that bridges Web2 and Web3 aut
 
 ---
 
+## 🔗 Bitcoin Node Requirements
+
+HODLXXI requires a Bitcoin Core node with specific configuration:
+
+### Required Bitcoin Core Setup
+
+- **Version**: Bitcoin Core 24.0 or higher
+- **RPC Access**: Must be accessible via RPC (enabled by default)
+- **Watch-Only Wallets**: All wallets MUST be watch-only (`disable_private_keys=true`)
+  ```bash
+  bitcoin-cli createwallet "mywallet" false false "" false true
+  ```
+- **No Private Keys**: HODLXXI never handles, stores, or requires private keys
+- **Network**: Recommended to start with testnet or regtest for development
+
+### Recommended Bitcoin Core Configuration
+
+For optimal functionality, configure Bitcoin Core with:
+
+- **Descriptor Wallets**: Required for covenant explorer and advanced features
+  ```
+  # bitcoin.conf
+  descriptors=1
+  ```
+- **Transaction Index**: Required for proof-of-funds verification
+  ```
+  # bitcoin.conf
+  txindex=1
+  ```
+- **RPC Configuration**:
+  ```
+  # bitcoin.conf
+  server=1
+  rpcuser=your_rpc_user
+  rpcpassword=your_secure_password
+  rpcallowip=127.0.0.1
+  rpcport=8332
+  ```
+
+### Security Notes
+
+- ✅ **Non-Custodial by Design**: HODLXXI never takes custody of user funds
+- ✅ **Watch-Only Operation**: All wallet operations use public keys only
+- ✅ **Cryptographic Verification**: Identity verification through signatures, never private key exposure
+- ⚠️ **Network Isolation**: For production, ensure Bitcoin RPC is not exposed to public internet
+- ⚠️ **Access Control**: Use strong RPC credentials and firewall rules
+
+---
+
 ## 🚀 Quick Start
 
 ### Prerequisites
 
 - **Python** 3.8 or higher
-- **Bitcoin Core** 24.0+ (with RPC enabled)
-- **PostgreSQL** 15+ (or SQLite for development)
-- **Redis** 7+ (optional but recommended)
+- **Bitcoin Core** 24.0+ (configured as described above)
+- **PostgreSQL** 15+ (or in-memory storage for development)
+- **Redis** 7+ (optional, for production caching)
 
 ### Installation
 
-#### Option 1: Docker (Recommended)
-
-```bash
-# Clone the repository
-git clone https://github.com/alnostru/Universal-Bitcoin-Identity-Layer.git
-cd Universal-Bitcoin-Identity-Layer
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your settings
-
-# Start all services
-docker-compose up -d
-
-# Check health
-curl http://localhost:5000/health
-```
-
-#### Option 2: Local Installation
+#### Option 1: Local Installation (Recommended for Alpha)
 
 ```bash
 # Clone the repository
@@ -190,13 +229,19 @@ pip install -r requirements.txt
 # Configure environment
 cp .env.example .env
 # Edit .env with your Bitcoin RPC credentials
-
-# Initialize database
-flask db upgrade
+# (Note: In-memory storage is used by default for alpha - no database setup required)
 
 # Run the application
 python app/app.py
 ```
+
+#### Option 2: Docker Deployment
+
+**Status**: Docker deployment is currently in development.
+
+Docker configuration files (`Dockerfile` and `docker-compose.yml`) are provided but should be considered experimental. For alpha testing, please use the local installation method above.
+
+Docker deployment will be production-ready in a future release.
 
 ### First Steps
 
@@ -476,13 +521,15 @@ Example Grafana dashboard configuration available in `/monitoring/grafana/`.
 
 ## 🧪 Testing
 
-HODLXXI has comprehensive test coverage (>85%):
+HODLXXI testing framework in development:
 
-- **Unit Tests**: Test individual functions and classes
-- **Integration Tests**: Test API endpoints and database operations
-- **E2E Tests**: Test complete user flows
-- **Security Tests**: Test security controls and protections
-- **Performance Tests**: Load and stress testing
+- **Unit Tests**: In progress
+- **Integration Tests**: In progress
+- **E2E Tests**: In progress
+- **Security Tests**: Planned
+- **Performance Tests**: Planned
+
+**Current Status**: Test coverage in active development. Contributions welcome!
 
 ```bash
 # Run all tests
@@ -562,18 +609,42 @@ Common issues and solutions: [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 
 ## 🗺️ Roadmap
 
-### Upcoming Features
+### Core Security & Standards (Priority)
 
-- [ ] Multi-signature wallet support
-- [ ] Lightning Channel management UI
-- [ ] Advanced analytics dashboard
-- [ ] Mobile SDKs (iOS/Android)
-- [ ] Webhook support for events
-- [ ] GraphQL API endpoint
-- [ ] Advanced Proof of Funds privacy features
-- [ ] Integration with more Lightning wallets
+- [ ] **PKCE Support**: OAuth2 PKCE (Proof Key for Code Exchange) for public clients
+- [ ] **JWKS Endpoint**: JSON Web Key Set for public key discovery
+- [ ] **Rotating Refresh Tokens**: Secure token refresh with automatic rotation
+- [ ] **Comprehensive Rate Limiting**: Per-endpoint rate limiting with Redis backend
+- [ ] **CSRF Protection**: Cross-Site Request Forgery protection for all state-changing operations
+- [ ] **TLS Enforcement**: Strict HTTPS/TLS requirements for production
+- [ ] **Formal Audit Logging**: Structured audit log streaming and retention
+- [ ] **Security Audit**: Professional third-party security assessment
 
-See [GitHub Projects](https://github.com/alnostru/Universal-Bitcoin-Identity-Layer/projects) for detailed roadmap.
+### Observability & Operations
+
+- [ ] **Prometheus Metrics**: `/metrics` endpoint with comprehensive application metrics
+- [ ] **Grafana Dashboards**: Pre-built dashboards for monitoring
+- [ ] **Health Check Enhancements**: Detailed health checks for all dependencies
+- [ ] **Structured Logging**: JSON-formatted logs for better parsing
+- [ ] **Error Tracking Integration**: Sentry/rollbar integration
+
+### Compliance & Documentation
+
+- [ ] **SOC2 Compliance Path**: Documentation and controls for SOC2 Type II
+- [ ] **SLA Framework**: Service Level Agreement definitions and monitoring
+- [ ] **99.9% Uptime Target**: High availability architecture and monitoring
+
+### Feature Enhancements
+
+- [ ] **Multi-signature Wallet Support**: Advanced multi-sig descriptor support
+- [ ] **Lightning Channel Management UI**: Channel opening, closing, and monitoring
+- [ ] **Mobile SDKs**: Native iOS and Android SDKs
+- [ ] **Webhook Support**: Event-driven webhooks for integrations
+- [ ] **GraphQL API**: Alternative API interface
+- [ ] **Advanced Proof of Funds**: Enhanced privacy levels and aggregation
+- [ ] **Extended Lightning Wallet Integration**: Support for more Lightning implementations
+
+See [GitHub Projects](https://github.com/alnostru/Universal-Bitcoin-Identity-Layer/projects) for detailed roadmap and progress tracking.
 
 ---
 
