@@ -53,10 +53,15 @@ def get_config() -> Dict[str, Any]:
         "LOG_LEVEL": os.getenv("LOG_LEVEL", "INFO"),
         "LOG_FILE": os.getenv("LOG_FILE", "logs/app.log"),
 
-        # Database Configuration (for future use)
+        # Database Configuration (REQUIRED for production)
         "DATABASE_URL": os.getenv("DATABASE_URL", None),
+        "DB_HOST": os.getenv("DB_HOST", "localhost"),
+        "DB_PORT": int(os.getenv("DB_PORT", "5432")),
+        "DB_USER": os.getenv("DB_USER", "hodlxxi"),
+        "DB_PASSWORD": os.getenv("DB_PASSWORD", None),
+        "DB_NAME": os.getenv("DB_NAME", "hodlxxi"),
 
-        # Redis Configuration (for future use)
+        # Redis Configuration (REQUIRED for production)
         "REDIS_HOST": os.getenv("REDIS_HOST", "localhost"),
         "REDIS_PORT": int(os.getenv("REDIS_PORT", "6379")),
         "REDIS_PASSWORD": os.getenv("REDIS_PASSWORD", None),
@@ -97,5 +102,14 @@ def validate_config(config: Dict[str, Any]) -> bool:
 
         if not config["FLASK_SECRET_KEY"]:
             raise ValueError("⚠️  FLASK_SECRET_KEY must be set for production!")
+
+        # Validate database configuration
+        if not config["DATABASE_URL"] and not config["DB_PASSWORD"]:
+            raise ValueError("⚠️  DATABASE_URL or DB_PASSWORD must be set for production!")
+
+        # Warn if Redis password not set
+        if not config["REDIS_PASSWORD"]:
+            import warnings
+            warnings.warn("⚠️  REDIS_PASSWORD not set - Redis will be unprotected!")
 
     return True

@@ -97,3 +97,11 @@ dmypy.json
 
 # Docker
 docker-compose.override.yml
+
+# Database backups
+backups/
+*.sql
+*.sql.gz
+
+# Alembic (keep versions directory but ignore personal overrides)
+alembic.ini.local

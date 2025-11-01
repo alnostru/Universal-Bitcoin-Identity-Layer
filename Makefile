@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test test-unit test-integration test-coverage lint format security clean docker-build docker-up docker-down
+.PHONY: help install install-dev test test-unit test-integration test-coverage lint format security clean docker-build docker-up docker-down db-init db-migrate db-upgrade db-downgrade db-backup db-restore
 
 # Default target
 .DEFAULT_GOAL := help
@@ -120,6 +120,41 @@ docker-restart: ## Restart Docker Compose services
 docker-clean: ## Clean Docker containers and volumes
 	$(DOCKER_COMPOSE) down -v
 	docker system prune -f
+
+db-init: ## Initialize database (create tables)
+	$(PYTHON) scripts/db_init.py
+
+db-migrate: ## Create a new database migration
+	alembic revision --autogenerate -m "$(message)"
+
+db-upgrade: ## Apply database migrations
+	alembic upgrade head
+
+db-downgrade: ## Rollback database migration
+	alembic downgrade -1
+
+db-status: ## Show current database migration status
+	alembic current
+
+db-history: ## Show database migration history
+	alembic history
+
+db-backup: ## Backup database
+	@echo "Creating database backup..."
+	./scripts/db_backup.sh
+
+db-restore: ## Restore database from backup
+	@echo "Available backups:"
+	@ls -lh ./backups/hodlxxi_backup_*.sql.gz 2>/dev/null || echo "No backups found"
+	@echo ""
+	@echo "Usage: make db-restore backup=./backups/hodlxxi_backup_YYYYMMDD_HHMMSS.sql.gz"
+	@if [ -n "$(backup)" ]; then ./scripts/db_restore.sh $(backup); fi
+
+db-reset: ## Reset database (drop and recreate)
+	@echo "⚠️  WARNING: This will delete all data!"
+	@read -p "Are you sure? (yes/no): " confirm && [ "$$confirm" = "yes" ] || exit 1
+	alembic downgrade base
+	alembic upgrade head
 
 run: ## Run the application locally
 	$(PYTHON) app/app.py
