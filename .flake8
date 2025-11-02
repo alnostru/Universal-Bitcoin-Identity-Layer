@@ -1,0 +1,56 @@
+[flake8]
+# Flake8 configuration for HODLXXI
+
+# Maximum line length
+max-line-length = 120
+
+# Maximum complexity
+max-complexity = 15
+
+# Exclude directories
+exclude =
+    .git,
+    __pycache__,
+    venv,
+    env,
+    .venv,
+    build,
+    dist,
+    *.egg-info,
+    .eggs,
+    .tox,
+    .pytest_cache,
+    .mypy_cache,
+    htmlcov,
+    .coverage
+
+# Ignore specific errors
+ignore =
+    E203,  # whitespace before ':'
+    E501,  # line too long (handled by max-line-length)
+    W503,  # line break before binary operator
+    W504,  # line break after binary operator
+    E402,  # module level import not at top of file
+
+# Select specific errors to check
+select = E,W,F,C,N
+
+# Per-file ignores
+per-file-ignores =
+    __init__.py:F401,F403
+    tests/*:F401,F403,F811
+
+# Show source code for errors
+show-source = True
+
+# Show pep8 error code for each error
+show-pep8 = True
+
+# Count number of errors
+count = True
+
+# Print total number of errors
+statistics = True
+
+# Format of error messages
+format = default
