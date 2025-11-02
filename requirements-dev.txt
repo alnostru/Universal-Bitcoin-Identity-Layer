@@ -15,7 +15,7 @@ httpretty==1.1.4
 
 # Redis & Database Testing
 fakeredis==2.20.1
-pytest-postgresql==5.0.0
+pytest-postgresql==5.1.1
 
 # Code Quality
 flake8==6.1.0
