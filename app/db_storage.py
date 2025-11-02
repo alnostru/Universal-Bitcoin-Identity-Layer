@@ -3,16 +3,24 @@ Database-backed storage for HODLXXI - Production version.
 
 This replaces the in-memory storage.py with PostgreSQL + Redis persistence.
 """
+
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
+
 from sqlalchemy.exc import SQLAlchemyError
-from app.database import session_scope, get_redis
+
+from app.database import get_redis, session_scope
 from app.models import (
-    User, OAuthClient, OAuthCode, OAuthToken, Session,
-    LNURLChallenge, ProofOfFundsChallenge, AuditLog,
-    BitcoinWallet, RateLimit, ChatMessage
+    AuditLog,
+    LNURLChallenge,
+    OAuthClient,
+    OAuthCode,
+    OAuthToken,
+    ProofOfFundsChallenge,
+    Session,
+    User,
 )
 
 logger = logging.getLogger(__name__)
@@ -21,6 +29,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # User Management
 # ============================================================================
+
 
 def create_user(pubkey: str, metadata: Dict = None) -> str:
     """
@@ -43,11 +52,7 @@ def create_user(pubkey: str, metadata: Dict = None) -> str:
             return user.id
 
         # Create new user
-        user = User(
-            pubkey=pubkey,
-            metadata=metadata or {},
-            last_login=datetime.utcnow()
-        )
+        user = User(pubkey=pubkey, metadata=metadata or {}, last_login=datetime.utcnow())
         session.add(user)
         session.flush()
         return user.id
@@ -70,12 +75,12 @@ def get_user_by_pubkey(pubkey: str) -> Optional[Dict]:
             return None
 
         return {
-            'id': user.id,
-            'pubkey': user.pubkey,
-            'created_at': user.created_at.isoformat(),
-            'last_login': user.last_login.isoformat() if user.last_login else None,
-            'metadata': user.metadata,
-            'is_active': user.is_active
+            "id": user.id,
+            "pubkey": user.pubkey,
+            "created_at": user.created_at.isoformat(),
+            "last_login": user.last_login.isoformat() if user.last_login else None,
+            "metadata": user.metadata,
+            "is_active": user.is_active,
         }
 
 
@@ -88,18 +93,19 @@ def get_user_by_id(user_id: str) -> Optional[Dict]:
             return None
 
         return {
-            'id': user.id,
-            'pubkey': user.pubkey,
-            'created_at': user.created_at.isoformat(),
-            'last_login': user.last_login.isoformat() if user.last_login else None,
-            'metadata': user.metadata,
-            'is_active': user.is_active
+            "id": user.id,
+            "pubkey": user.pubkey,
+            "created_at": user.created_at.isoformat(),
+            "last_login": user.last_login.isoformat() if user.last_login else None,
+            "metadata": user.metadata,
+            "is_active": user.is_active,
         }
 
 
 # ============================================================================
 # OAuth Client Management
 # ============================================================================
+
 
 def store_oauth_client(client_id: str, client_data: Dict) -> None:
     """
@@ -141,22 +147,23 @@ def get_oauth_client(client_id: str) -> Optional[Dict]:
             return None
 
         return {
-            'client_id': client.client_id,
-            'client_secret': client.client_secret,
-            'client_name': client.client_name,
-            'redirect_uris': client.redirect_uris,
-            'grant_types': client.grant_types,
-            'response_types': client.response_types,
-            'scope': client.scope,
-            'token_endpoint_auth_method': client.token_endpoint_auth_method,
-            'created_at': client.created_at.isoformat(),
-            'metadata': client.metadata
+            "client_id": client.client_id,
+            "client_secret": client.client_secret,
+            "client_name": client.client_name,
+            "redirect_uris": client.redirect_uris,
+            "grant_types": client.grant_types,
+            "response_types": client.response_types,
+            "scope": client.scope,
+            "token_endpoint_auth_method": client.token_endpoint_auth_method,
+            "created_at": client.created_at.isoformat(),
+            "metadata": client.metadata,
         }
 
 
 # ============================================================================
 # OAuth Authorization Code Management
 # ============================================================================
+
 
 def store_oauth_code(code: str, code_data: Dict) -> None:
     """
@@ -168,7 +175,7 @@ def store_oauth_code(code: str, code_data: Dict) -> None:
     """
     with session_scope() as session:
         # Create user if doesn't exist
-        user_id = code_data.get('user_id')
+        user_id = code_data.get("user_id")
         if user_id:
             user = session.query(User).filter_by(id=user_id).first()
             if not user:
@@ -177,13 +184,13 @@ def store_oauth_code(code: str, code_data: Dict) -> None:
 
         oauth_code = OAuthCode(
             code=code,
-            client_id=code_data['client_id'],
+            client_id=code_data["client_id"],
             user_id=user_id,
-            redirect_uri=code_data['redirect_uri'],
-            scope=code_data.get('scope'),
-            code_challenge=code_data.get('code_challenge'),
-            code_challenge_method=code_data.get('code_challenge_method'),
-            expires_at=datetime.fromisoformat(code_data['expires_at'])
+            redirect_uri=code_data["redirect_uri"],
+            scope=code_data.get("scope"),
+            code_challenge=code_data.get("code_challenge"),
+            code_challenge_method=code_data.get("code_challenge_method"),
+            expires_at=datetime.fromisoformat(code_data["expires_at"]),
         )
         session.add(oauth_code)
 
@@ -209,15 +216,15 @@ def get_oauth_code(code: str) -> Optional[Dict]:
             return None
 
         return {
-            'code': oauth_code.code,
-            'client_id': oauth_code.client_id,
-            'user_id': oauth_code.user_id,
-            'redirect_uri': oauth_code.redirect_uri,
-            'scope': oauth_code.scope,
-            'code_challenge': oauth_code.code_challenge,
-            'code_challenge_method': oauth_code.code_challenge_method,
-            'created_at': oauth_code.created_at.isoformat(),
-            'expires_at': oauth_code.expires_at.isoformat()
+            "code": oauth_code.code,
+            "client_id": oauth_code.client_id,
+            "user_id": oauth_code.user_id,
+            "redirect_uri": oauth_code.redirect_uri,
+            "scope": oauth_code.scope,
+            "code_challenge": oauth_code.code_challenge,
+            "code_challenge_method": oauth_code.code_challenge_method,
+            "created_at": oauth_code.created_at.isoformat(),
+            "expires_at": oauth_code.expires_at.isoformat(),
         }
 
 
@@ -238,6 +245,7 @@ def delete_oauth_code(code: str) -> None:
 # OAuth Token Management
 # ============================================================================
 
+
 def store_oauth_token(token_id: str, token_data: Dict) -> None:
     """
     Store OAuth2 access/refresh token.
@@ -249,15 +257,19 @@ def store_oauth_token(token_id: str, token_data: Dict) -> None:
     with session_scope() as session:
         token = OAuthToken(
             id=token_id,
-            access_token=token_data['access_token'],
-            refresh_token=token_data.get('refresh_token'),
-            token_type=token_data.get('token_type', 'Bearer'),
-            client_id=token_data['client_id'],
-            user_id=token_data['user_id'],
-            scope=token_data.get('scope'),
-            access_token_expires_at=datetime.fromisoformat(token_data['access_token_expires_at']),
-            refresh_token_expires_at=datetime.fromisoformat(token_data['refresh_token_expires_at']) if token_data.get('refresh_token_expires_at') else None,
-            metadata=token_data.get('metadata')
+            access_token=token_data["access_token"],
+            refresh_token=token_data.get("refresh_token"),
+            token_type=token_data.get("token_type", "Bearer"),
+            client_id=token_data["client_id"],
+            user_id=token_data["user_id"],
+            scope=token_data.get("scope"),
+            access_token_expires_at=datetime.fromisoformat(token_data["access_token_expires_at"]),
+            refresh_token_expires_at=(
+                datetime.fromisoformat(token_data["refresh_token_expires_at"])
+                if token_data.get("refresh_token_expires_at")
+                else None
+            ),
+            metadata=token_data.get("metadata"),
         )
         session.add(token)
 
@@ -273,10 +285,7 @@ def get_oauth_token(access_token: str) -> Optional[Dict]:
         Token data dictionary or None
     """
     with session_scope() as session:
-        token = session.query(OAuthToken).filter_by(
-            access_token=access_token,
-            is_revoked=False
-        ).first()
+        token = session.query(OAuthToken).filter_by(access_token=access_token, is_revoked=False).first()
 
         if not token:
             return None
@@ -286,17 +295,19 @@ def get_oauth_token(access_token: str) -> Optional[Dict]:
             return None
 
         return {
-            'id': token.id,
-            'access_token': token.access_token,
-            'refresh_token': token.refresh_token,
-            'token_type': token.token_type,
-            'client_id': token.client_id,
-            'user_id': token.user_id,
-            'scope': token.scope,
-            'created_at': token.created_at.isoformat(),
-            'access_token_expires_at': token.access_token_expires_at.isoformat(),
-            'refresh_token_expires_at': token.refresh_token_expires_at.isoformat() if token.refresh_token_expires_at else None,
-            'metadata': token.metadata
+            "id": token.id,
+            "access_token": token.access_token,
+            "refresh_token": token.refresh_token,
+            "token_type": token.token_type,
+            "client_id": token.client_id,
+            "user_id": token.user_id,
+            "scope": token.scope,
+            "created_at": token.created_at.isoformat(),
+            "access_token_expires_at": token.access_token_expires_at.isoformat(),
+            "refresh_token_expires_at": (
+                token.refresh_token_expires_at.isoformat() if token.refresh_token_expires_at else None
+            ),
+            "metadata": token.metadata,
         }
 
 
@@ -312,6 +323,7 @@ def revoke_oauth_token(access_token: str) -> None:
 # Session Management (with Redis caching)
 # ============================================================================
 
+
 def store_session(session_id: str, session_data: Dict) -> None:
     """
     Store user session (database + Redis cache).
@@ -325,15 +337,11 @@ def store_session(session_id: str, session_data: Dict) -> None:
     if redis_client:
         try:
             ttl = 86400  # 24 hours default
-            if 'expires_at' in session_data:
-                expires_at = datetime.fromisoformat(session_data['expires_at'])
+            if "expires_at" in session_data:
+                expires_at = datetime.fromisoformat(session_data["expires_at"])
                 ttl = int((expires_at - datetime.utcnow()).total_seconds())
 
-            redis_client.setex(
-                f"session:{session_id}",
-                ttl,
-                json.dumps(session_data)
-            )
+            redis_client.setex(f"session:{session_id}", ttl, json.dumps(session_data))
         except Exception as e:
             logger.error(f"Redis session storage failed: {e}")
 
@@ -341,12 +349,12 @@ def store_session(session_id: str, session_data: Dict) -> None:
     with session_scope() as session:
         user_session = Session(
             session_id=session_id,
-            user_id=session_data['user_id'],
-            session_type=session_data.get('session_type', 'web'),
-            expires_at=datetime.fromisoformat(session_data['expires_at']),
-            ip_address=session_data.get('ip_address'),
-            user_agent=session_data.get('user_agent'),
-            metadata=session_data.get('metadata')
+            user_id=session_data["user_id"],
+            session_type=session_data.get("session_type", "web"),
+            expires_at=datetime.fromisoformat(session_data["expires_at"]),
+            ip_address=session_data.get("ip_address"),
+            user_agent=session_data.get("user_agent"),
+            metadata=session_data.get("metadata"),
         )
         session.add(user_session)
 
@@ -373,10 +381,7 @@ def get_session(session_id: str) -> Optional[Dict]:
 
     # Fallback to database
     with session_scope() as session:
-        user_session = session.query(Session).filter_by(
-            session_id=session_id,
-            is_active=True
-        ).first()
+        user_session = session.query(Session).filter_by(session_id=session_id, is_active=True).first()
 
         if not user_session:
             return None
@@ -390,15 +395,15 @@ def get_session(session_id: str) -> Optional[Dict]:
         user_session.last_activity = datetime.utcnow()
 
         return {
-            'session_id': user_session.session_id,
-            'user_id': user_session.user_id,
-            'session_type': user_session.session_type,
-            'created_at': user_session.created_at.isoformat(),
-            'expires_at': user_session.expires_at.isoformat(),
-            'last_activity': user_session.last_activity.isoformat(),
-            'ip_address': user_session.ip_address,
-            'user_agent': user_session.user_agent,
-            'metadata': user_session.metadata
+            "session_id": user_session.session_id,
+            "user_id": user_session.user_id,
+            "session_type": user_session.session_type,
+            "created_at": user_session.created_at.isoformat(),
+            "expires_at": user_session.expires_at.isoformat(),
+            "last_activity": user_session.last_activity.isoformat(),
+            "ip_address": user_session.ip_address,
+            "user_agent": user_session.user_agent,
+            "metadata": user_session.metadata,
         }
 
 
@@ -428,15 +433,16 @@ def delete_session(session_id: str) -> None:
 # LNURL Challenge Management
 # ============================================================================
 
+
 def store_lnurl_challenge(session_id: str, challenge_data: Dict) -> None:
     """Store LNURL-auth challenge."""
     with session_scope() as session:
         challenge = LNURLChallenge(
             session_id=session_id,
-            k1=challenge_data['k1'],
-            expires_at=datetime.fromisoformat(challenge_data['expires_at']),
-            callback_url=challenge_data.get('callback_url'),
-            metadata=challenge_data.get('metadata')
+            k1=challenge_data["k1"],
+            expires_at=datetime.fromisoformat(challenge_data["expires_at"]),
+            callback_url=challenge_data.get("callback_url"),
+            metadata=challenge_data.get("metadata"),
         )
         session.add(challenge)
 
@@ -454,15 +460,15 @@ def get_lnurl_challenge(session_id: str) -> Optional[Dict]:
             return None
 
         return {
-            'session_id': challenge.session_id,
-            'k1': challenge.k1,
-            'pubkey': challenge.pubkey,
-            'created_at': challenge.created_at.isoformat(),
-            'expires_at': challenge.expires_at.isoformat(),
-            'verified_at': challenge.verified_at.isoformat() if challenge.verified_at else None,
-            'is_verified': challenge.is_verified,
-            'callback_url': challenge.callback_url,
-            'metadata': challenge.metadata
+            "session_id": challenge.session_id,
+            "k1": challenge.k1,
+            "pubkey": challenge.pubkey,
+            "created_at": challenge.created_at.isoformat(),
+            "expires_at": challenge.expires_at.isoformat(),
+            "verified_at": challenge.verified_at.isoformat() if challenge.verified_at else None,
+            "is_verified": challenge.is_verified,
+            "callback_url": challenge.callback_url,
+            "metadata": challenge.metadata,
         }
 
 
@@ -480,17 +486,18 @@ def update_lnurl_challenge(session_id: str, pubkey: str) -> None:
 # Proof of Funds Challenge Management
 # ============================================================================
 
+
 def store_pof_challenge(challenge_id: str, challenge_data: Dict) -> None:
     """Store Proof of Funds challenge."""
     with session_scope() as session:
         challenge = ProofOfFundsChallenge(
             challenge_id=challenge_id,
-            pubkey=challenge_data['pubkey'],
-            challenge_message=challenge_data['challenge'],
-            threshold=challenge_data.get('threshold'),
-            privacy_level=challenge_data.get('privacy_level', 'boolean'),
-            expires_at=datetime.fromisoformat(challenge_data['expires_at']),
-            metadata=challenge_data.get('metadata')
+            pubkey=challenge_data["pubkey"],
+            challenge_message=challenge_data["challenge"],
+            threshold=challenge_data.get("threshold"),
+            privacy_level=challenge_data.get("privacy_level", "boolean"),
+            expires_at=datetime.fromisoformat(challenge_data["expires_at"]),
+            metadata=challenge_data.get("metadata"),
         )
         session.add(challenge)
 
@@ -508,17 +515,17 @@ def get_pof_challenge(challenge_id: str) -> Optional[Dict]:
             return None
 
         return {
-            'challenge_id': challenge.challenge_id,
-            'pubkey': challenge.pubkey,
-            'challenge': challenge.challenge_message,
-            'threshold': challenge.threshold,
-            'privacy_level': challenge.privacy_level,
-            'created_at': challenge.created_at.isoformat(),
-            'expires_at': challenge.expires_at.isoformat(),
-            'is_verified': challenge.is_verified,
-            'proof_data': challenge.proof_data,
-            'result': challenge.result,
-            'metadata': challenge.metadata
+            "challenge_id": challenge.challenge_id,
+            "pubkey": challenge.pubkey,
+            "challenge": challenge.challenge_message,
+            "threshold": challenge.threshold,
+            "privacy_level": challenge.privacy_level,
+            "created_at": challenge.created_at.isoformat(),
+            "expires_at": challenge.expires_at.isoformat(),
+            "is_verified": challenge.is_verified,
+            "proof_data": challenge.proof_data,
+            "result": challenge.result,
+            "metadata": challenge.metadata,
         }
 
 
@@ -536,6 +543,7 @@ def update_pof_challenge(challenge_id: str, proof_data: Dict, result: Dict) -> N
 # ============================================================================
 # Generic Storage (Key-Value with Redis)
 # ============================================================================
+
 
 def generic_store(key: str, value: Any, ttl: int = None) -> None:
     """
@@ -598,9 +606,16 @@ def generic_delete(key: str) -> None:
 # Audit Logging
 # ============================================================================
 
-def log_audit_event(event_type: str, action: str, user_id: str = None,
-                   user_identifier: str = None, success: bool = True,
-                   severity: str = 'info', **kwargs) -> None:
+
+def log_audit_event(
+    event_type: str,
+    action: str,
+    user_id: str = None,
+    user_identifier: str = None,
+    success: bool = True,
+    severity: str = "info",
+    **kwargs,
+) -> None:
     """
     Log security audit event to database.
 
@@ -621,12 +636,12 @@ def log_audit_event(event_type: str, action: str, user_id: str = None,
             user_identifier=user_identifier,
             success=success,
             severity=severity,
-            ip_address=kwargs.get('ip_address'),
-            user_agent=kwargs.get('user_agent'),
-            resource=kwargs.get('resource'),
-            error_message=kwargs.get('error_message'),
-            details=kwargs.get('details'),
-            metadata=kwargs.get('metadata')
+            ip_address=kwargs.get("ip_address"),
+            user_agent=kwargs.get("user_agent"),
+            resource=kwargs.get("resource"),
+            error_message=kwargs.get("error_message"),
+            details=kwargs.get("details"),
+            metadata=kwargs.get("metadata"),
         )
         session.add(log_entry)
 
@@ -634,6 +649,7 @@ def log_audit_event(event_type: str, action: str, user_id: str = None,
 # ============================================================================
 # Cleanup Functions
 # ============================================================================
+
 
 def cleanup_expired_sessions() -> int:
     """
@@ -643,10 +659,11 @@ def cleanup_expired_sessions() -> int:
         Number of sessions cleaned up
     """
     with session_scope() as session:
-        count = session.query(Session).filter(
-            Session.expires_at < datetime.utcnow(),
-            Session.is_active == True
-        ).update({Session.is_active: False})
+        count = (
+            session.query(Session)
+            .filter(Session.expires_at < datetime.utcnow(), Session.is_active.is_(True))
+            .update({Session.is_active: False})
+        )
 
         return count
 
@@ -659,15 +676,17 @@ def cleanup_expired_challenges() -> int:
         Number of challenges cleaned up
     """
     with session_scope() as session:
-        lnurl_count = session.query(LNURLChallenge).filter(
-            LNURLChallenge.expires_at < datetime.utcnow(),
-            LNURLChallenge.is_verified == False
-        ).delete()
+        lnurl_count = (
+            session.query(LNURLChallenge)
+            .filter(LNURLChallenge.expires_at < datetime.utcnow(), LNURLChallenge.is_verified.is_(False))
+            .delete()
+        )
 
-        pof_count = session.query(ProofOfFundsChallenge).filter(
-            ProofOfFundsChallenge.expires_at < datetime.utcnow(),
-            ProofOfFundsChallenge.is_verified == False
-        ).delete()
+        pof_count = (
+            session.query(ProofOfFundsChallenge)
+            .filter(ProofOfFundsChallenge.expires_at < datetime.utcnow(), ProofOfFundsChallenge.is_verified.is_(False))
+            .delete()
+        )
 
         return lnurl_count + pof_count
 
@@ -680,8 +699,6 @@ def cleanup_expired_codes() -> int:
         Number of codes cleaned up
     """
     with session_scope() as session:
-        count = session.query(OAuthCode).filter(
-            OAuthCode.expires_at < datetime.utcnow()
-        ).delete()
+        count = session.query(OAuthCode).filter(OAuthCode.expires_at < datetime.utcnow()).delete()
 
         return count
