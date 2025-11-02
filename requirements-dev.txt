@@ -44,5 +44,5 @@ pycodestyle==2.11.1
 pydocstyle==6.3.0
 
 # Development Tools
-ipython==8.18.1
+ipython==8.37.0
 ipdb==0.13.13
