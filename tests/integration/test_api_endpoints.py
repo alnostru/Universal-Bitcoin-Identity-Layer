@@ -25,9 +25,8 @@ class TestHealthEndpoint:
         response = client.get("/health")
         data = response.get_json()
 
-        assert "version" in data
-        assert data["version"] == "1.0.0-alpha"
-
+        assert 'version' in data
+        assert data['version'] == '1.0.0-beta'
 
 class TestMetricsEndpoint:
     """Test metrics endpoint."""

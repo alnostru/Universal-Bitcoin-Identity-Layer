@@ -197,8 +197,11 @@ def health():
     Returns JSON indicating service status.
     Used by Docker healthcheck and monitoring systems.
     """
-    return jsonify({"status": "ok", "service": "HODLXXI", "version": "1.0.0-alpha"}), 200
-
+    return jsonify({
+        "status": "ok",
+        "service": "HODLXXI",
+        "version": "1.0.0-beta"
+    }), 200
 
 @app.before_request
 def _oauth_public_allowlist():

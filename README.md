@@ -2,17 +2,31 @@
 
 > A production-intended Bitcoin API combining OAuth2/OpenID Connect with Lightning Network authentication
 
-## ⚠️ ALPHA WARNING
+## 🚀 BETA STATUS
 
-**This software is in active development and should be considered ALPHA quality.**
+**This software is production-ready infrastructure with beta-quality application code.**
 
+### ✅ Production-Ready Components:
+- ✅ **Database Persistence**: PostgreSQL + Redis with automated backups
+- ✅ **Security Hardening**: SSL/TLS, firewall, Fail2ban, non-root execution
+- ✅ **CI/CD Pipeline**: Automated testing, linting, security scanning
+- ✅ **Deployment Automation**: One-command production deployment
+- ✅ **Monitoring**: Health checks, structured logging, service monitoring
+
+### ⚠️ Important Warnings:
 - ⚠️ **NO CUSTODY**: This system never holds or controls user funds. All operations are non-custodial.
-- ⚠️ **DO NOT TRUST WITH FUNDS**: Use only with watch-only wallets for testing and development.
-- ⚠️ **API SURFACE WILL CHANGE**: Endpoints, request/response formats, and authentication flows may change without notice.
-- ⚠️ **SECURITY REVIEW ONGOING**: This code has not undergone formal security audit. Do not use in production without thorough review.
-- ⚠️ **TEST ENVIRONMENT ONLY**: Intended for development, testing, and experimentation on testnet/regtest.
+- ⚠️ **SECURITY AUDIT PENDING**: No formal third-party security audit yet. Recommended for production use with caution.
+- ⚠️ **NOT BATTLE-TESTED**: Limited production usage. Monitor closely and test thoroughly before scaling.
+- ⚠️ **API MAY EVOLVE**: While stable, some endpoints may change before v1.0. Follow semantic versioning.
 
-**For production use**: Wait for v1.0 stable release after security audit completion.
+### 📊 Production Readiness:
+- **Infrastructure**: ✅ Production-grade (PostgreSQL, Redis, Nginx, SSL/TLS)
+- **Security**: 🟡 Good (hardened, but no formal audit)
+- **Testing**: ✅ CI/CD with automated tests
+- **Documentation**: ✅ Comprehensive deployment guides
+- **Battle-tested**: 🟡 Limited production usage
+
+**Recommendation**: Safe for production use with proper monitoring and gradual rollout. Complete security audit recommended before handling sensitive data at scale.
 
 <div align="center">
 
