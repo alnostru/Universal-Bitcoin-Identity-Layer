@@ -29,7 +29,7 @@ bandit==1.7.6
 safety==2.3.5
 
 # Git Hooks
-pre-commit==3.6.0
+pre-commit==3.8.0
 
 # Type Stubs
 types-requests==2.31.0.20231231
