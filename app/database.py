@@ -3,16 +3,19 @@ Database connection and session management for HODLXXI.
 
 Production-grade PostgreSQL and Redis connections with pooling.
 """
-import os
+
 import logging
+import os
 from contextlib import contextmanager
 from typing import Generator, Optional
+
 import redis
 from sqlalchemy import create_engine, event, exc
-from sqlalchemy.orm import sessionmaker, Session, scoped_session
+from sqlalchemy.orm import Session, scoped_session, sessionmaker
 from sqlalchemy.pool import Pool
-from app.models import Base
+
 from app.config import get_config
+from app.models import Base
 
 logger = logging.getLogger(__name__)
 
@@ -30,15 +33,15 @@ def get_database_url() -> str:
         Database connection URL
     """
     config = get_config()
-    db_url = config.get('DATABASE_URL')
+    db_url = config.get("DATABASE_URL")
 
     if not db_url:
         # Build from components if DATABASE_URL not provided
-        db_host = config.get('DB_HOST', 'localhost')
-        db_port = config.get('DB_PORT', '5432')
-        db_user = config.get('DB_USER', 'hodlxxi')
-        db_password = config.get('DB_PASSWORD', 'hodlxxi')
-        db_name = config.get('DB_NAME', 'hodlxxi')
+        db_host = config.get("DB_HOST", "localhost")
+        db_port = config.get("DB_PORT", "5432")
+        db_user = config.get("DB_USER", "hodlxxi")
+        db_password = config.get("DB_PASSWORD", "hodlxxi")
+        db_name = config.get("DB_NAME", "hodlxxi")
 
         db_url = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 
@@ -69,10 +72,7 @@ def init_database(echo: bool = False, create_tables: bool = False) -> None:
         max_overflow=20,  # Additional connections when pool is exhausted
         pool_pre_ping=True,  # Verify connections before using them
         pool_recycle=3600,  # Recycle connections after 1 hour
-        connect_args={
-            "connect_timeout": 10,
-            "options": "-c timezone=utc"
-        }
+        connect_args={"connect_timeout": 10, "options": "-c timezone=utc"},
     )
 
     # Add connection pool listeners for better error handling
@@ -174,24 +174,16 @@ def check_database_health() -> dict:
             # Simple query to test connection
             session.execute("SELECT 1")
 
-        return {
-            "status": "healthy",
-            "database": "postgresql",
-            "connected": True
-        }
+        return {"status": "healthy", "database": "postgresql", "connected": True}
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
-        return {
-            "status": "unhealthy",
-            "database": "postgresql",
-            "connected": False,
-            "error": str(e)
-        }
+        return {"status": "unhealthy", "database": "postgresql", "connected": False, "error": str(e)}
 
 
 # ============================================================================
 # Redis Connection Management
 # ============================================================================
+
 
 def init_redis() -> None:
     """
@@ -205,10 +197,10 @@ def init_redis() -> None:
 
     config = get_config()
 
-    redis_host = config.get('REDIS_HOST', 'localhost')
-    redis_port = config.get('REDIS_PORT', 6379)
-    redis_password = config.get('REDIS_PASSWORD')
-    redis_db = config.get('REDIS_DB', 0)
+    redis_host = config.get("REDIS_HOST", "localhost")
+    redis_port = config.get("REDIS_PORT", 6379)
+    redis_password = config.get("REDIS_PASSWORD")
+    redis_db = config.get("REDIS_DB", 0)
 
     try:
         _redis_client = redis.Redis(
@@ -221,7 +213,7 @@ def init_redis() -> None:
             socket_timeout=5,
             retry_on_timeout=True,
             max_connections=50,
-            health_check_interval=30
+            health_check_interval=30,
         )
 
         # Test connection
@@ -264,12 +256,7 @@ def check_redis_health() -> dict:
         Dictionary with health status
     """
     if _redis_client is None:
-        return {
-            "status": "unavailable",
-            "cache": "redis",
-            "connected": False,
-            "error": "Redis not initialized"
-        }
+        return {"status": "unavailable", "cache": "redis", "connected": False, "error": "Redis not initialized"}
 
     try:
         _redis_client.ping()
@@ -281,24 +268,20 @@ def check_redis_health() -> dict:
             "status": "healthy",
             "cache": "redis",
             "connected": True,
-            "version": info.get('redis_version'),
-            "uptime_seconds": info.get('uptime_in_seconds'),
-            "connected_clients": info.get('connected_clients'),
-            "used_memory_human": info.get('used_memory_human')
+            "version": info.get("redis_version"),
+            "uptime_seconds": info.get("uptime_in_seconds"),
+            "connected_clients": info.get("connected_clients"),
+            "used_memory_human": info.get("used_memory_human"),
         }
     except Exception as e:
         logger.error(f"Redis health check failed: {e}")
-        return {
-            "status": "unhealthy",
-            "cache": "redis",
-            "connected": False,
-            "error": str(e)
-        }
+        return {"status": "unhealthy", "cache": "redis", "connected": False, "error": str(e)}
 
 
 # ============================================================================
 # Utility Functions
 # ============================================================================
+
 
 def execute_raw_sql(sql: str, params: dict = None) -> list:
     """
@@ -346,6 +329,7 @@ def vacuum_database() -> None:
 # Initialization Helper
 # ============================================================================
 
+
 def init_all(echo: bool = False, create_tables: bool = False) -> None:
     """
     Initialize both database and Redis.
@@ -377,7 +361,4 @@ def get_health_status() -> dict:
     Returns:
         Dictionary with health status
     """
-    return {
-        "database": check_database_health(),
-        "redis": check_redis_health()
-    }
+    return {"database": check_database_health(), "redis": check_redis_health()}

@@ -11,7 +11,7 @@ pytest-xdist==3.5.0  # Parallel test execution
 
 # HTTP Testing
 responses==0.24.1
-httpretty==1.1.7
+httpretty==1.1.4
 
 # Redis & Database Testing
 fakeredis==2.20.1

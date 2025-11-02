@@ -1,86 +1,77 @@
-from decimal import Decimal
-from flask import Flask, jsonify, render_template_string, request, session, redirect, url_for, send_file, abort, g
-from bitcoinrpc.authproxy import AuthServiceProxy
-from functools import wraps
-import re
-import qrcode
 import base64
-from io import BytesIO
-from bech32 import bech32_encode, bech32_decode, convertbits
-import requests
-from hashlib import sha256
 import hashlib
-import base58
-import uuid
-import time
-import os
-import secrets
-from datetime import datetime, timedelta, timezone
-from flask_socketio import SocketIO, emit
-from typing import Tuple, Dict, Set, List, Optional
 import logging
+import os
+import re
+import secrets
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from functools import wraps
+from hashlib import sha256
+from io import BytesIO
 from logging.handlers import RotatingFileHandler
-from storage import init_storage, get_storage
-from config import get_config
-from audit_logger import init_audit_logger, get_audit_logger
+from typing import Dict, List, Optional, Set, Tuple
 
+import base58
+import qrcode
+import requests
+from audit_logger import get_audit_logger, init_audit_logger
+from bech32 import bech32_decode, bech32_encode, convertbits
+from bitcoinrpc.authproxy import AuthServiceProxy
+from config import get_config
+from flask import Flask, abort, g, jsonify, redirect, render_template_string, request, send_file, session, url_for
+from flask_socketio import SocketIO, emit
+from storage import get_storage, init_storage
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 # Add file handler for production
-if not os.path.exists('logs'):
-    os.makedirs('logs')
+if not os.path.exists("logs"):
+    os.makedirs("logs")
 
-file_handler = RotatingFileHandler(
-    'logs/app.log',
-    maxBytes=10485760,  # 10MB
-    backupCount=10
-)
-file_handler.setFormatter(logging.Formatter(
-    '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
-))
+file_handler = RotatingFileHandler("logs/app.log", maxBytes=10485760, backupCount=10)  # 10MB
+file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]"))
 file_handler.setLevel(logging.INFO)
-logger.addHandler(file_handler) 
-
-
-
+logger.addHandler(file_handler)
 
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 
-
-
 def _as_bool(v, default=False):
-    if v is None: return default
-    return str(v).lower() in ("1","true","yes","y","on")
+    if v is None:
+        return default
+    return str(v).lower() in ("1", "true", "yes", "y", "on")
+
 
 LNURL_SESSIONS = {}
 
-ONLINE_META: Dict[str, str] = {}    
+ONLINE_META: Dict[str, str] = {}
 
 # Improved secret key handling
 FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY")
 if not FLASK_SECRET_KEY:
     # Generate and save secret key if not set
-    secret_file = '.flask_secret'
+    secret_file = ".flask_secret"
     if os.path.exists(secret_file):
-        with open(secret_file, 'r') as f:
+        with open(secret_file, "r") as f:
             FLASK_SECRET_KEY = f.read().strip()
         logger.info("Loaded existing Flask secret key from file")
     else:
         FLASK_SECRET_KEY = secrets.token_hex(32)
         try:
-            with open(secret_file, 'w') as f:
+            with open(secret_file, "w") as f:
                 f.write(FLASK_SECRET_KEY)
             os.chmod(secret_file, 0o600)  # Secure permissions
-            logger.warning("Generated new Flask secret key and saved to file. Set FLASK_SECRET_KEY env var for production!")
+            logger.warning(
+                "Generated new Flask secret key and saved to file. Set FLASK_SECRET_KEY env var for production!"
+            )
         except Exception as e:
             logger.error(f"Could not save secret key to file: {e}")
             FLASK_SECRET_KEY = secrets.token_urlsafe(32)
@@ -91,14 +82,14 @@ RPC_USER = os.getenv("RPC_USER", "")
 RPC_PASS = os.getenv("RPC_PASSWORD", "")
 RPC_HOST = os.getenv("RPC_HOST", "127.0.0.1")
 RPC_PORT = int(os.getenv("RPC_PORT", "8332"))
-WALLET   = os.getenv("RPC_WALLET", "")
+WALLET = os.getenv("RPC_WALLET", "")
 
 SOCKETIO_CORS = os.getenv("SOCKETIO_CORS", "*")
 
 # (optional) env-driven guest/specials if you want:
-GUEST_PUBKEY   = os.getenv("GUEST_PUBKEY", "").strip()
-GUEST_PRIVKEY  = os.getenv("GUEST_PRIVKEY", "").strip()
-GUEST2_PUBKEY  = os.getenv("GUEST2_PUBKEY", "").strip()
+GUEST_PUBKEY = os.getenv("GUEST_PUBKEY", "").strip()
+GUEST_PRIVKEY = os.getenv("GUEST_PRIVKEY", "").strip()
+GUEST2_PUBKEY = os.getenv("GUEST2_PUBKEY", "").strip()
 GUEST2_PRIVKEY = os.getenv("GUEST2_PRIVKEY", "").strip()
 
 SPECIAL_NAMES = {}
@@ -110,14 +101,13 @@ if GUEST2_PUBKEY:
 SPECIAL_USERS = [x.strip() for x in os.getenv("SPECIAL_USERS", "").split(",") if x.strip()]
 
 
-
-EXPIRY_SECONDS = 45 
-ACTIVE_SOCKETS: Dict[str, str] = {} 
+EXPIRY_SECONDS = 45
+ACTIVE_SOCKETS: Dict[str, str] = {}
 ONLINE_USERS: Set[str] = set()
 CHAT_HISTORY: List[Dict[str, any]] = []
 
 
-FORCE_RELAY = os.getenv("FORCE_RELAY", "false").lower() in ("1","true","yes","on")
+FORCE_RELAY = os.getenv("FORCE_RELAY", "false").lower() in ("1", "true", "yes", "on")
 logger.info(f"FORCE_RELAY = {FORCE_RELAY}")
 
 
@@ -125,6 +115,7 @@ def truncate_key(key: str, head: int = 6, tail: int = 4) -> str:
     if len(key) <= head + tail:
         return key
     return f"{key[:head]}…{key[-tail:]}"
+
 
 app = Flask(__name__)
 
@@ -147,12 +138,14 @@ ACTIVE_CHALLENGES = {}
 # SOCKETIO ERROR HANDLERS
 # ============================================================================
 
+
 @socketio.on_error_default
 def default_error_handler(e):
     """Handle SocketIO errors"""
     logger.error(f"SocketIO error: {e}", exc_info=True)
 
-@socketio.on('connect')
+
+@socketio.on("connect")
 def handle_connect():
     """Handle socket connection"""
     try:
@@ -160,43 +153,43 @@ def handle_connect():
     except Exception as e:
         logger.error(f"Error handling connection: {e}", exc_info=True)
 
-@socketio.on('disconnect')
+
+@socketio.on("disconnect")
 def handle_disconnect(*args):
     """Handle socket disconnection with proper cleanup"""
     try:
         sid = request.sid
         logger.info(f"Client disconnecting: {sid}")
-        
+
         # Clean up ACTIVE_SOCKETS
         if sid in ACTIVE_SOCKETS:
             pubkey = ACTIVE_SOCKETS.pop(sid)
             logger.info(f"Removed socket {sid} for pubkey {pubkey}")
-            
+
             # Check if user has other active sockets
             remaining_sockets = [s for s, pk in ACTIVE_SOCKETS.items() if pk == pubkey]
             if not remaining_sockets and pubkey in ONLINE_USERS:
                 ONLINE_USERS.discard(pubkey)
                 logger.info(f"User {pubkey} is now offline")
-                
+
     except Exception as e:
         logger.error(f"Error handling disconnect: {e}", exc_info=True)
+
 
 # ============================================================================
 
 # --- OAuth public allowlist (place right after app = Flask(...)) ---
 from flask import request
 
-OAUTH_PATH_PREFIXES = ('/oauth/', '/oauthx/')
-OAUTH_PUBLIC_PATHS = (
-    '/oauth/register', '/oauth/authorize', '/oauth/token',
-    '/oauthx/status', '/oauthx/docs'
-)
+OAUTH_PATH_PREFIXES = ("/oauth/", "/oauthx/")
+OAUTH_PUBLIC_PATHS = ("/oauth/register", "/oauth/authorize", "/oauth/token", "/oauthx/status", "/oauthx/docs")
 
 # ============================================================================
 # HEALTH CHECK ENDPOINT
 # ============================================================================
 
-@app.route('/health')
+
+@app.route("/health")
 def health():
     """
     Basic health check endpoint.
@@ -212,16 +205,17 @@ def health():
 
 @app.before_request
 def _oauth_public_allowlist():
-    p = (request.path or '/')
+    p = request.path or "/"
     if any(p.startswith(pref) for pref in OAUTH_PATH_PREFIXES) or p in OAUTH_PUBLIC_PATHS:
         # Mark request so any later guards skip login
-        setattr(request, '_oauth_public', True)
+        setattr(request, "_oauth_public", True)
         return None
 
 
 # ============================================================================
 # HEALTH CHECK & MONITORING ENDPOINTS
 # ============================================================================
+
 
 @app.route("/health")
 def health_check():
@@ -233,9 +227,9 @@ def health_check():
             "timestamp": time.time(),
             "active_sockets": len(ACTIVE_SOCKETS),
             "online_users": len(ONLINE_USERS),
-            "chat_history_size": len(CHAT_HISTORY)
+            "chat_history_size": len(CHAT_HISTORY),
         }
-        
+
         # Try to ping RPC (optional)
         try:
             rpc = get_rpc_connection()
@@ -245,11 +239,12 @@ def health_check():
             health_status["rpc"] = "error"
             health_status["rpc_error"] = str(e)
             logger.warning(f"RPC health check failed: {e}")
-        
+
         return jsonify(health_status), 200
     except Exception as e:
         logger.error(f"Health check failed: {e}", exc_info=True)
         return jsonify({"status": "unhealthy", "error": str(e)}), 500
+
 
 @app.route("/metrics")
 def metrics():
@@ -261,47 +256,62 @@ def metrics():
             "online_users": len(ONLINE_USERS),
             "chat_history_size": len(CHAT_HISTORY),
             "active_challenges": len(ACTIVE_CHALLENGES),
-            "lnurl_sessions": len(LNURL_SESSIONS)
+            "lnurl_sessions": len(LNURL_SESSIONS),
         }
         return jsonify(metrics_data), 200
     except Exception as e:
         logger.error(f"Metrics endpoint failed: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
+
 # ============================================================================
 
 
+import base64
+import hashlib
+import hmac
+import os
+
 # /turn_credentials (dynamic, time-limited)
-import time, hmac, hashlib, base64, os
+import time
+
 from flask import jsonify
 
 TURN_HOST = os.getenv("TURN_HOST", "213.111.146.201")
 TURN_SECRET = os.getenv("TURN_SECRET", "")
 TURN_TTL = int(os.getenv("TURN_TTL", "3600"))
 
+
 @app.route("/turn_credentials")
 def turn_credentials():
     if not TURN_SECRET:
-        return jsonify({"error":"TURN not configured"}), 500
+        return jsonify({"error": "TURN not configured"}), 500
     username = str(int(time.time()) + TURN_TTL)
-    digest = hmac.new(TURN_SECRET.encode("utf-8"),
-                      username.encode("utf-8"),
-                      hashlib.sha1).digest()
+    digest = hmac.new(TURN_SECRET.encode("utf-8"), username.encode("utf-8"), hashlib.sha1).digest()
     password = base64.b64encode(digest).decode("utf-8")
-    return jsonify([
-        {"urls": [f"stun:{TURN_HOST}:3478"]},
-        {"urls": [f"turn:{TURN_HOST}:3478?transport=udp",
-                  f"turn:{TURN_HOST}:443?transport=udp"],
-         "username": username, "credential": password}
-    ]), 200
+    return (
+        jsonify(
+            [
+                {"urls": [f"stun:{TURN_HOST}:3478"]},
+                {
+                    "urls": [f"turn:{TURN_HOST}:3478?transport=udp", f"turn:{TURN_HOST}:443?transport=udp"],
+                    "username": username,
+                    "credential": password,
+                },
+            ]
+        ),
+        200,
+    )
+
 
 def extract_script_from_any_descriptor(descriptor: str) -> str | None:
     """
     Find the innermost raw(<HEX>) no matter how it's wrapped:
     raw(...), wsh(raw(...)), sh(wsh(raw(...))), etc.
     """
-    m = re.search(r'raw\(([0-9A-Fa-f]+)\)', descriptor)
+    m = re.search(r"raw\(([0-9A-Fa-f]+)\)", descriptor)
     return m.group(1) if m else None
+
 
 def classify_presence(pubkey: str | None, access_level: str | None) -> str:
     """
@@ -335,87 +345,93 @@ def classify_presence(pubkey: str | None, access_level: str | None) -> str:
     return "limited"
 
 
-
 # --- WebRTC signaling relay (server) ---
+
 
 def sids_for_pubkey(pk: str):
     """Get all socket IDs for a given pubkey"""
     return [sid for sid, who in ACTIVE_SOCKETS.items() if who == pk]
 
-@socketio.on('rtc:offer')
+
+@socketio.on("rtc:offer")
 def rtc_offer(data):
     """data = {to: , from: , offer: {...}}"""
     try:
-        target = (data or {}).get('to')
+        target = (data or {}).get("to")
         if not target:
             logger.warning("RTC offer received without target")
             return
         for sid in sids_for_pubkey(target):
-            socketio.emit('rtc:offer', data, to=sid)
+            socketio.emit("rtc:offer", data, to=sid)
     except Exception as e:
         logger.error(f"Error in rtc_offer: {e}", exc_info=True)
 
-@socketio.on('rtc:answer')
+
+@socketio.on("rtc:answer")
 def rtc_answer(data):
     """data = {to: , from: , answer: {...}}"""
     try:
-        target = (data or {}).get('to')
+        target = (data or {}).get("to")
         if not target:
             logger.warning("RTC answer received without target")
             return
         for sid in sids_for_pubkey(target):
-            socketio.emit('rtc:answer', data, to=sid)
+            socketio.emit("rtc:answer", data, to=sid)
     except Exception as e:
         logger.error(f"Error in rtc_answer: {e}", exc_info=True)
 
-@socketio.on('rtc:ice')
+
+@socketio.on("rtc:ice")
 def rtc_ice(data):
     """data = {to: , from: , candidate: {...}}"""
     try:
-        target = (data or {}).get('to')
+        target = (data or {}).get("to")
         if not target:
             logger.warning("RTC ICE candidate received without target")
             return
         for sid in sids_for_pubkey(target):
-            socketio.emit('rtc:ice', data, to=sid)
+            socketio.emit("rtc:ice", data, to=sid)
     except Exception as e:
         logger.error(f"Error in rtc_ice: {e}", exc_info=True)
 
-@socketio.on('rtc:hangup')
+
+@socketio.on("rtc:hangup")
 def rtc_hangup(data):
     """data = {to: , from: }"""
     try:
-        target = (data or {}).get('to')
+        target = (data or {}).get("to")
         if not target:
             logger.warning("RTC hangup received without target")
             return
         for sid in sids_for_pubkey(target):
-            socketio.emit('rtc:hangup', data, to=sid)
+            socketio.emit("rtc:hangup", data, to=sid)
     except Exception as e:
         logger.error(f"Error in rtc_hangup: {e}", exc_info=True)
 
-@socketio.on('message')
+
+@socketio.on("message")
 def handle_message(msg_text):
     """Handle incoming chat messages"""
     try:
-        pk = session.get('logged_in_pubkey')
+        pk = session.get("logged_in_pubkey")
         if not pk:
             logger.warning("Message received from unauthenticated user")
             return
-        
+
         m = {"pubkey": pk, "text": str(msg_text), "ts": time.time()}
         CHAT_HISTORY.append(m)
         purge_old_messages()
-        socketio.emit('message', m)
+        socketio.emit("message", m)
     except Exception as e:
         logger.error(f"Error handling message: {e}", exc_info=True)
+
 
 app.config["SESSION_PERMANENT"] = True
 app.permanent_session_lifetime = timedelta(days=7)
 
 import threading
-
 from decimal import Decimal
+
 
 def get_save_and_check_balances_for_pubkey(pubkey_hex: str) -> tuple[Decimal, Decimal]:
     """
@@ -427,12 +443,12 @@ def get_save_and_check_balances_for_pubkey(pubkey_hex: str) -> tuple[Decimal, De
     Also collects "neutral" (non-matching) contracts into g.neutral_cards for display.
     """
     rpc_conn = get_rpc_connection()
-    in_total  = Decimal(0)
+    in_total = Decimal(0)
     out_total = Decimal(0)
     neutral_cards: list[dict] = []
 
-    for desc_item in rpc_conn.listdescriptors().get('descriptors', []):
-        raw_desc = desc_item['desc']
+    for desc_item in rpc_conn.listdescriptors().get("descriptors", []):
+        raw_desc = desc_item["desc"]
 
         # tolerate wrappers like wsh(raw(...))
         script = extract_script_from_any_descriptor(raw_desc)
@@ -440,26 +456,26 @@ def get_save_and_check_balances_for_pubkey(pubkey_hex: str) -> tuple[Decimal, De
             continue
 
         decoded = rpc_conn.decodescript(script)
-        asm     = decoded.get('asm', '')
-        op_if   = extract_pubkey_from_op_if(asm)
+        asm = decoded.get("asm", "")
+        op_if = extract_pubkey_from_op_if(asm)
         op_else = extract_pubkey_from_op_else(asm)
 
         # Address: segwit -> p2sh -> derive from descriptor
-        addr = (decoded.get('segwit') or {}).get('address')
+        addr = (decoded.get("segwit") or {}).get("address")
         if not addr:
-            addr = (decoded.get('p2sh') or {}).get('address')
+            addr = (decoded.get("p2sh") or {}).get("address")
         if not addr:
             try:
-                info  = rpc_conn.getdescriptorinfo(raw_desc)
-                addrs = rpc_conn.deriveaddresses(info['descriptor'])
-                addr  = addrs[0] if addrs else None
+                info = rpc_conn.getdescriptorinfo(raw_desc)
+                addrs = rpc_conn.deriveaddresses(info["descriptor"])
+                addr = addrs[0] if addrs else None
             except Exception:
                 addr = None
         if not addr:
             continue
 
-        utxos   = rpc_conn.listunspent(0, 9_999_999, [addr])
-        sum_btc = sum(Decimal(u['amount']) for u in utxos)
+        utxos = rpc_conn.listunspent(0, 9_999_999, [addr])
+        sum_btc = sum(Decimal(u["amount"]) for u in utxos)
 
         matched = False
         if op_if and op_if.lower() == pubkey_hex.lower():
@@ -471,11 +487,13 @@ def get_save_and_check_balances_for_pubkey(pubkey_hex: str) -> tuple[Decimal, De
 
         # Collect non-matching contracts so the UI can render them neutrally
         if not matched and sum_btc > 0:
-            neutral_cards.append({
-                "addr": addr,
-                "amount_btc": f"{sum_btc:.8f}",
-                "desc": mask_raw_descriptor(raw_desc),
-            })
+            neutral_cards.append(
+                {
+                    "addr": addr,
+                    "amount_btc": f"{sum_btc:.8f}",
+                    "desc": mask_raw_descriptor(raw_desc),
+                }
+            )
 
     # Expose neutral cards to the current request (no API change)
     try:
@@ -488,23 +506,23 @@ def get_save_and_check_balances_for_pubkey(pubkey_hex: str) -> tuple[Decimal, De
 
 def require_full_access():
     """Abort with 403 unless session['access_level']=='full'."""
-    if session.get('access_level') != 'full':
-        abort(403, 'Full access required')
+    if session.get("access_level") != "full":
+        abort(403, "Full access required")
+
 
 import os
+
 from bitcoinrpc.authproxy import AuthServiceProxy
 
+
 def get_rpc_connection():
-    rpc_user   = os.getenv("RPC_USER", "hodlwatch")
-    rpc_pass   = os.getenv("RPC_PASSWORD", "")   # <— use RPC_PASSWORD consistently
-    rpc_host   = os.getenv("RPC_HOST", "127.0.0.1")
-    rpc_port   = os.getenv("RPC_PORT", "8332")
+    rpc_user = os.getenv("RPC_USER", "hodlwatch")
+    rpc_pass = os.getenv("RPC_PASSWORD", "")  # <— use RPC_PASSWORD consistently
+    rpc_host = os.getenv("RPC_HOST", "127.0.0.1")
+    rpc_port = os.getenv("RPC_PORT", "8332")
     rpc_wallet = os.getenv("RPC_WALLET", "")
     url = f"http://{rpc_user}:{rpc_pass}@{rpc_host}:{rpc_port}/wallet/{rpc_wallet}"
     return AuthServiceProxy(url, timeout=60)
-
-
-
 
 
 def derive_legacy_address_from_pubkey(pubkey_hex):
@@ -512,43 +530,43 @@ def derive_legacy_address_from_pubkey(pubkey_hex):
     sha_digest = sha256(pubkey_bytes).digest()
     try:
         import hashlib
-        ripe = hashlib.new('ripemd160', sha_digest).digest()
+
+        ripe = hashlib.new("ripemd160", sha_digest).digest()
     except:
-        ripe = sha256(b'').digest()
-    vbyte = b'\x00' + ripe
+        ripe = sha256(b"").digest()
+    vbyte = b"\x00" + ripe
     chksum = sha256(sha256(vbyte).digest()).digest()[:4]
     address = base58.b58encode(vbyte + chksum).decode()
     return address
+
 
 def generate_challenge():
     return str(uuid.uuid4())
 
 
-
-
 # --- Minimal login/guest/dev helpers ---------------------------------
 @app.before_request
 def check_auth():
-    from flask import request, jsonify, redirect, url_for, session
+    from flask import jsonify, redirect, request, session, url_for
 
-    p = (request.path or '/')
+    p = request.path or "/"
     m = request.method
-    endpoint = request.endpoint or ''
-    endpoint_base = endpoint.rsplit('.', 1)[-1]  # handle blueprint endpoints
+    endpoint = request.endpoint or ""
+    endpoint_base = endpoint.rsplit(".", 1)[-1]  # handle blueprint endpoints
 
     # 0) Always allow preflight + simple assets
-    if m == 'OPTIONS' or p in ('/favicon.ico', '/robots.txt'):
+    if m == "OPTIONS" or p in ("/favicon.ico", "/robots.txt"):
         return None
 
-# 1) Always bypass session login for token/OAuth routes & Socket.IO
+    # 1) Always bypass session login for token/OAuth routes & Socket.IO
     if (
-        p.startswith('/oauth/') or
-        p.startswith('/oauthx/') or
-        p.startswith('/oauthdemo/') or
-        p.startswith('/socket.io/') or
-        p.startswith('/static/') or
-        p == '/dashboard' or
-        p == '/playground'
+        p.startswith("/oauth/")
+        or p.startswith("/oauthx/")
+        or p.startswith("/oauthdemo/")
+        or p.startswith("/socket.io/")
+        or p.startswith("/static/")
+        or p == "/dashboard"
+        or p == "/playground"
     ):
         return None
 
@@ -559,51 +577,73 @@ def check_auth():
 
     # 1.6) Public paths (no session required)
     PUBLIC_PATHS = {
-        '/', '/oidc', '/oicd',
-        '/explorer', '/verify_pubkey_and_list',
-        '/.well-known/openid-configuration', '/oauth/jwks.json',
-        '/oauth/authorize', '/oauth/token', '/oauth/register', '/oauth/introspect',
-        '/oauthx/status', '/oauthx/docs',
-        '/login', '/logout',
+        "/",
+        "/oidc",
+        "/oicd",
+        "/explorer",
+        "/verify_pubkey_and_list",
+        "/.well-known/openid-configuration",
+        "/oauth/jwks.json",
+        "/oauth/authorize",
+        "/oauth/token",
+        "/oauth/register",
+        "/oauth/introspect",
+        "/oauthx/status",
+        "/oauthx/docs",
+        "/login",
+        "/logout",
     }
     if p in PUBLIC_PATHS:
         return None
 
     # 2) Public endpoints by function name (handle blueprints)
     public_endpoints = {
-        'login', 'logout',
-        'verify_signature',
-        'guest_login', 'guest_login2',
-        'static',
-        'convert_wif', 'decode_raw_script',
-        'turn_credentials',
-        'api_challenge', 'api_verify', 'userinfo',
-        'set_labels_from_zpub',
-        'universal_login',
-        'lnurl_create', 'lnurl_params', 'lnurl_callback', 'lnurl_check',
-        'oauth_register', 'oauth_authorize', 'oauth_token',
-        'oauthx_status', 'oauthx_docs', 'api_docs',
+        "login",
+        "logout",
+        "verify_signature",
+        "guest_login",
+        "guest_login2",
+        "static",
+        "convert_wif",
+        "decode_raw_script",
+        "turn_credentials",
+        "api_challenge",
+        "api_verify",
+        "userinfo",
+        "set_labels_from_zpub",
+        "universal_login",
+        "lnurl_create",
+        "lnurl_params",
+        "lnurl_callback",
+        "lnurl_check",
+        "oauth_register",
+        "oauth_authorize",
+        "oauth_token",
+        "oauthx_status",
+        "oauthx_docs",
+        "api_docs",
         # landing & explorer
-        'landing_page', 'root_redirect', 'oidc_alias',
-        'explorer_page', 'verify_pubkey_and_list',
+        "landing_page",
+        "root_redirect",
+        "oidc_alias",
+        "explorer_page",
+        "verify_pubkey_and_list",
     }
     if endpoint_base in public_endpoints:
         return None
 
     # 3) Everything else requires a logged-in session
-    if not session.get('logged_in_pubkey'):
-        if p.startswith('/api/') or p.endswith('/set_labels_from_zpub'):
+    if not session.get("logged_in_pubkey"):
+        if p.startswith("/api/") or p.endswith("/set_labels_from_zpub"):
             return jsonify(ok=False, error="Not logged in"), 401
         nxt = request.full_path if request.query_string else request.path
-        return redirect(url_for('login', next=nxt))
+        return redirect(url_for("login", next=nxt))
 
 
-
-
-@socketio.on('connect')
+@socketio.on("connect")
 def on_connect():
-    pubkey = session.get('logged_in_pubkey', '')
-    level  = session.get('access_level')
+    pubkey = session.get("logged_in_pubkey", "")
+    level = session.get("access_level")
     if not pubkey:
         return  # or allow anonymous if you prefer
 
@@ -613,10 +653,10 @@ def on_connect():
     ONLINE_USERS.add(pubkey)
     ONLINE_META[pubkey] = role
 
-    socketio.emit('user:joined', {"pubkey": pubkey, "role": role})
+    socketio.emit("user:joined", {"pubkey": pubkey, "role": role})
 
 
-@socketio.on('disconnect')
+@socketio.on("disconnect")
 def on_disconnect(*args):  # Added *args
     sid = request.sid
     pubkey = ACTIVE_SOCKETS.pop(sid, None)
@@ -627,30 +667,32 @@ def on_disconnect(*args):  # Added *args
     if pubkey not in ACTIVE_SOCKETS.values():
         ONLINE_USERS.discard(pubkey)
         ONLINE_META.pop(pubkey, None)
-        socketio.emit('user:left', {"pubkey": pubkey})
+        socketio.emit("user:left", {"pubkey": pubkey})
+
 
 def purge_old_messages():
     """Keep only messages newer than EXPIRY_SECONDS."""
     import time
+
     now = time.time()
-    
+
     def is_fresh(m):
-        ts = (m.get("ts") if isinstance(m, dict) else None)
+        ts = m.get("ts") if isinstance(m, dict) else None
         return ts is not None and (now - ts) <= EXPIRY_SECONDS
+
     global CHAT_HISTORY
     CHAT_HISTORY[:] = [m for m in CHAT_HISTORY if is_fresh(m)]
 
-@app.route('/chat')
+
+@app.route("/chat")
 def chat():
-    
+
     my_pubkey = session.get("logged_in_pubkey", "")
-    
-    
+
     online_users_list = list(ONLINE_USERS)
-    
-    
+
     purge_old_messages()
-    
+
     chat_html = r"""
 <!DOCTYPE html>
 <html>
@@ -699,7 +741,7 @@ body {
 @supports (-webkit-touch-callout: none) {
   body { min-height: -webkit-fill-available; }
 }
-        
+
         /* Header */
         .header {
             padding: 12px 16px;
@@ -711,7 +753,7 @@ body {
             flex-shrink: 0;
             backdrop-filter: blur(2px);
         }
-        
+
         .back-btn {
             background: none;
             border: 1px solid #0f0;
@@ -725,23 +767,23 @@ body {
             align-items: center;
             gap: 4px;
         }
-        
+
         .back-btn:active {
             background: #0f0;
             color: #000;
         }
-        
+
         .title {
             font-size: 16px;
             font-weight: 500;
             text-shadow: 0 0 8px rgba(0,255,0,.5);
         }
-        
+
         .online-count {
             font-size: 12px;
             color: #88ff88;
         }
-        
+
         /* Online Users Bar */
         .online-bar {
             padding: 8px 16px;
@@ -752,7 +794,7 @@ body {
             white-space: nowrap;
             backdrop-filter: blur(2px);
         }
-        
+
         .online-user {
             display: inline-block;
             padding: 4px 8px;
@@ -764,7 +806,7 @@ body {
             cursor: pointer;
             color: #0f0;
         }
-        
+
         .online-user:active {
             background: #0f0;
             color: #000;
@@ -778,7 +820,7 @@ body {
 .online-user.role-random  { background:#ff3b30; color:#ffffff; border-color:#ff6b60; }
 
 
-        
+
         /* Messages Container */
         .messages-container {
             flex: 1;
@@ -790,7 +832,7 @@ body {
             padding-top: 16px;
             padding-bottom: 16px;
         }
-        
+
         .message {
             max-width: 80%;
             word-wrap: break-word;
@@ -807,22 +849,22 @@ body {
         @keyframes fadeOut {
           to { opacity: 0; transform: translateY(-2px); }
         }
-        
+
         .message.mine {
             align-self: flex-end;
             text-align: right;
         }
-        
+
         .message.theirs {
             align-self: flex-start;
         }
-        
+
         .message-sender {
             font-size: 11px;
             color: #66cc66;
             margin-bottom: 2px;
         }
-        
+
         .message-text {
             background: rgba(26,26,26,0.85);
             padding: 8px 12px;
@@ -831,13 +873,13 @@ body {
             border: 1px solid #333;
             backdrop-filter: blur(2px);
         }
-        
+
         .message.mine .message-text {
             background: rgba(10,42,10,0.9);
             border-color: #0f0;
             box-shadow: 0 0 10px rgba(0,255,0,.12);
         }
-        
+
         /* Input Area */
         .input-area {
             padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
@@ -849,7 +891,7 @@ body {
             flex-shrink: 0;
             backdrop-filter: blur(4px);
         }
-        
+
         .message-input {
             flex: 1;
             background: rgba(26,26,26,0.85);
@@ -861,15 +903,15 @@ body {
             resize: none;
             min-height: 40px;
             max-height: 120px;
-            outline: none;  
+            outline: none;
             font-family: inherit;
         }
-        
+
         .message-input:focus {
             border-color: #0f0;
             box-shadow: 0 0 0 3px rgba(0,255,0,.1);
         }
-        
+
         .send-btn {
             background: #0f0;
             color: #000;
@@ -885,18 +927,18 @@ body {
             flex-shrink: 0;
             box-shadow: 0 0 12px rgba(0,255,0,.25);
         }
-        
+
         .send-btn:active {
             background: #0a0;
         }
-        
+
         .send-btn:disabled {
             background: #333;
             color: #666;
             cursor: not-allowed;
             box-shadow: none;
         }
-        
+
         /* Mobile optimizations */
         @media (max-width: 480px) {
             .header { padding: 10px 12px; }
@@ -909,7 +951,7 @@ body {
             .input-area { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); }
             .message { max-width: 90%; }
         }
-        
+
         /* Scrollbar styling */
         .messages-container::-webkit-scrollbar { width: 3px; }
         .messages-container::-webkit-scrollbar-track { background: transparent; }
@@ -980,7 +1022,7 @@ body {
   pointer-events: none;
 }
 
-.call-stage { 
+.call-stage {
   padding-bottom: max(0px, env(safe-area-inset-bottom));
   padding-top:    max(0px, env(safe-area-inset-top));
 }
@@ -1031,24 +1073,24 @@ body {
         <div class="title">The Matrix has you...follow e923</div>
         <div class="online-count" id="onlineCount">{{ online_count }} online</div>
     </div>
-    
+
     <!-- Online Users -->
     <div class="online-bar" id="onlineBar"></div>
-    
+
     <!-- Messages -->
     <div class="messages-container" id="messagesContainer"></div>
-    
+
     <!-- Input -->
     <div class="input-area">
-        <textarea 
-            id="messageInput" 
-            class="message-input" 
+        <textarea
+            id="messageInput"
+            class="message-input"
             placeholder="Type a message..."
             rows="1"
         ></textarea>
         <button id="sendBtn" class="send-btn" disabled>→</button>
     </div>
-    
+
     <!-- Audio elements -->
     <audio id="joinSound" preload="auto" playsinline>
         <source src="{{ url_for('static', filename='sounds/join.mp3') }}" type="audio/mpeg">
@@ -1746,7 +1788,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let currentPeer = null, callState = 'idle', micMuted = false, camOff = false, statsTimer = null, callTimer = null;
   let lastRxBytes = 0, lastRxTs = 0, chosenMic = null, chosenCam = null, currentVideoSender = null; let pendingIce = [];
   let remoteDescSet = false;
-  
+
 
   // ---------- helpers ----------
   const nameOf = (pk) => (window.SPECIAL_NAMES && SPECIAL_NAMES[pk]) || ('…' + (pk||'').slice(-4));
@@ -2182,7 +2224,7 @@ async function endCall(sendSignal = true) {
     el.addEventListener('mousedown', onDown); window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
     el.addEventListener('touchstart', onDown, {passive:false}); window.addEventListener('touchmove', onMove, {passive:false}); window.addEventListener('touchend', onUp);
 el.addEventListener('touchend', onUp, {passive:false});
-})(); 
+})();
 
 
 
@@ -2263,7 +2305,7 @@ el.addEventListener('touchend', onUp, {passive:false});
     const accept = async ()=>{
       ui.sheet.style.display='none';
       try { ui.ring.pause(); ui.ring.currentTime = 0; ui.ring.loop = false; } catch {}
-      await goFullscreen(); 
+      await goFullscreen();
       await acceptCall(from, offer);
       controlsStart();
     };
@@ -2357,64 +2399,69 @@ socket.on('rtc:ice', async ({candidate}) => {
 
     """
     return render_template_string(
-         chat_html,
-         history=CHAT_HISTORY,
-         my_pubkey=my_pubkey,
-         online_users=online_users_list,
-         online_count=len(online_users_list),
-         special_names=SPECIAL_NAMES,
-         force_relay=FORCE_RELAY,
-         access_level=session.get('access_level','limited'),
+        chat_html,
+        history=CHAT_HISTORY,
+        my_pubkey=my_pubkey,
+        online_users=online_users_list,
+        online_count=len(online_users_list),
+        special_names=SPECIAL_NAMES,
+        force_relay=FORCE_RELAY,
+        access_level=session.get("access_level", "limited"),
     )
 
 
-
-
+import base64
+import hashlib
+import json
 
 # Inserted OAuth layer
-import os, json, time, uuid, base64, hashlib
+import os
+import time
+import uuid
 from datetime import datetime, timedelta, timezone
-from flask import Blueprint, jsonify, request, current_app, abort
-import jwt  # PyJWT
-from jwt import algorithms
 from pathlib import Path, PurePath
+
+import jwt  # PyJWT
+from flask import Blueprint, abort, current_app, jsonify, request
+from jwt import algorithms
 
 oauth_bp = Blueprint("oauth", __name__)
 
 # --- Simple in-memory store (swap with Redis/Postgres in prod) ---
 REFRESH_STORE = {}  # {refresh_token: {sub, scope, exp, jti}}
-KEYRING = {}        # {kid: {"private": str, "public": str, "alg": "RS256", "created": ts}}
+KEYRING = {}  # {kid: {"private": str, "public": str, "alg": "RS256", "created": ts}}
+
 
 # --- Load/ensure RSA keys (single KID demo; rotate in prod) ---
-@app.route('/login', methods=['GET'])
+@app.route("/login", methods=["GET"])
 def login():
     # Session challenge for legacy /verify_signature flow
     challenge_str = generate_challenge()
-    session['challenge'] = challenge_str
-    session['challenge_timestamp'] = time.time()
+    session["challenge"] = challenge_str
+    session["challenge_timestamp"] = time.time()
 
     # Optional node stats (safe if node unreachable)
     from datetime import datetime, timedelta, timezone
+
     try:
         rpc = get_rpc_connection()
         wallet_balance = rpc.getbalance()
-        block_height   = rpc.getblockcount()
-        remaining      = 1777777 - block_height
+        block_height = rpc.getblockcount()
+        remaining = 1777777 - block_height
 
-        uptime_sec   = rpc.uptime()
-        startup_time = (datetime.now(timezone.utc) - timedelta(seconds=uptime_sec))\
-            .strftime('%Y-%m-%d %H:%M:%S UTC')
+        uptime_sec = rpc.uptime()
+        startup_time = (datetime.now(timezone.utc) - timedelta(seconds=uptime_sec)).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-        mp_info       = rpc.getmempoolinfo()
-        mempool_txs   = mp_info.get('size', 0)
-        mempool_usage = mp_info.get('usage', 0)
+        mp_info = rpc.getmempoolinfo()
+        mempool_txs = mp_info.get("size", 0)
+        mempool_usage = mp_info.get("usage", 0)
     except Exception:
         wallet_balance = None
-        block_height   = None
-        remaining      = None
-        startup_time   = None
-        mempool_txs    = None
-        mempool_usage  = None
+        block_height = None
+        remaining = None
+        startup_time = None
+        mempool_txs = None
+        mempool_usage = None
 
     # Login page with dual Matrix backgrounds (toggle embedded inside panel)
     html = """
@@ -2507,7 +2554,7 @@ def login():
     <div class="tabs">
       <button id="tabLegacy"  class="tab-btn active" onclick="showTab('legacy')">Legacy</button>
       <button id="tabApi"     class="tab-btn"         onclick="showTab('api')">API</button>
-      <button onclick="loginWithLightning()" 
+      <button onclick="loginWithLightning()"
           style="background:#f7931a;color:#000;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;font-weight:600;">
     ⚡
   </button>
@@ -2560,9 +2607,9 @@ def login():
 <div class="guest-login-panel">
   <input id="guestPin" type="text" placeholder="PIN or leave blank for guest"
          style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #0f2; background: #111; color: #0f2;">
-  <button onclick="guestLogin()" 
+  <button onclick="guestLogin()"
           style="margin-top:10px; width:100%; padding:10px; background:#0f2; color:#000; font-weight:bold; border:none; border-radius:4px;">
-    Guest 
+    Guest
   </button>
 
 
@@ -2902,46 +2949,40 @@ async function loginWithNostr(){
     )
 
 
-
-
-
 def is_hex32(s: str) -> bool:
     return bool(re.fullmatch(r"[0-9a-fA-F]{64}", s))
-
 
 
 def hex_to_wif(hex_priv, compressed=True, testnet=False):
     if len(hex_priv) != 64:
         return None
     priv_bytes = bytes.fromhex(hex_priv)
-    prefix = b'\xEF' if testnet else b'\x80'
+    prefix = b"\xef" if testnet else b"\x80"
     extended = prefix + priv_bytes
     if compressed:
-        extended += b'\x01'
+        extended += b"\x01"
     checksum = hashlib.sha256(hashlib.sha256(extended).digest()).digest()[:4]
     return base58.b58encode(extended + checksum).decode()
+
 
 def make_qr_base64(data):
     img = qrcode.make(data)
     buf = BytesIO()
-    img.save(buf, format='PNG')
+    img.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode()
 
 
-
-
-
-@app.route('/verify_signature', methods=['POST'])
+@app.route("/verify_signature", methods=["POST"])
 def verify_signature():
-    data        = request.get_json()
-    pubkey_hex  = (data.get('pubkey') or '').strip()
-    signature   = (data.get('signature') or '').strip()
-    challenge   = (data.get('challenge') or '').strip()
+    data = request.get_json()
+    pubkey_hex = (data.get("pubkey") or "").strip()
+    signature = (data.get("signature") or "").strip()
+    challenge = (data.get("challenge") or "").strip()
 
     # Challenge checks
-    if 'challenge' not in session or session['challenge'] != challenge:
+    if "challenge" not in session or session["challenge"] != challenge:
         return jsonify({"verified": False, "error": "Invalid or expired challenge"}), 400
-    if time.time() - session.get('challenge_timestamp', 0) > 600:
+    if time.time() - session.get("challenge_timestamp", 0) > 600:
         return jsonify({"verified": False, "error": "Challenge expired (10 min limit)"}), 400
     if not signature:
         return jsonify({"verified": False, "error": "Signature is required"}), 400
@@ -2950,7 +2991,7 @@ def verify_signature():
     matched_pubkey = None
 
     if pubkey_hex:
-        if not re.fullmatch(r'[0-9a-fA-F]{66}', pubkey_hex):
+        if not re.fullmatch(r"[0-9a-fA-F]{66}", pubkey_hex):
             return jsonify({"verified": False, "error": "PubKey must be 66 hex chars."}), 400
         try:
             derived_addr = derive_legacy_address_from_pubkey(pubkey_hex)
@@ -2974,40 +3015,36 @@ def verify_signature():
             return jsonify({"verified": False, "error": "Invalid signature"}), 403
 
     # Set session + access level
-    session['logged_in_pubkey'] = matched_pubkey
+    session["logged_in_pubkey"] = matched_pubkey
     if not pubkey_hex:  # matched a special user
-        session['access_level'] = 'full'
+        session["access_level"] = "full"
     else:
         in_bal, out_bal = get_save_and_check_balances_for_pubkey(matched_pubkey)
         ratio = (out_bal / in_bal) if in_bal > 0 else 0
-        session['access_level'] = 'full' if ratio >= 1 else 'limited'
+        session["access_level"] = "full" if ratio >= 1 else "limited"
     session.permanent = True
 
     # Notify chat clients
-    socketio.emit('user:logged_in', matched_pubkey)
+    socketio.emit("user:logged_in", matched_pubkey)
 
     print(f"[DEBUG] verify_signature → matched_pubkey={matched_pubkey}, access_level={session['access_level']}")
-    return jsonify({
-        "verified":     True,
-        "access_level": session['access_level'],
-        "pubkey":       matched_pubkey
-    })
+    return jsonify({"verified": True, "access_level": session["access_level"], "pubkey": matched_pubkey})
 
 
-@app.route('/guest_login', methods=['POST'])
+@app.route("/guest_login", methods=["POST"])
 def guest_login():
     """Guest or PIN login:
-       - With PIN: use PIN itself as unique identity (presence/chat/call)
-       - Without PIN: random temporary guest ID
-       - Reuse session if already logged in
+    - With PIN: use PIN itself as unique identity (presence/chat/call)
+    - Without PIN: random temporary guest ID
+    - Reuse session if already logged in
     """
     data = request.get_json(silent=True) or {}
-    pin = (data.get('pin') or '').strip()
+    pin = (data.get("pin") or "").strip()
 
     # If user already has a session, resume it
-    if session.get('logged_in_pubkey'):
+    if session.get("logged_in_pubkey"):
         print(f"[guest_login] Resume session for {session.get('guest_label')}")
-        return jsonify(ok=True, label=session.get('guest_label'))
+        return jsonify(ok=True, label=session.get("guest_label"))
 
     if pin:
         # ✅ PIN as full identity
@@ -3015,56 +3052,52 @@ def guest_login():
         if not label:
             return jsonify(error="Invalid PIN"), 403
 
-        session['logged_in_pubkey'] = pin           # 🔸 use PIN as identity key
-        session['logged_in_privkey'] = None          # no privkey needed
-        session['guest_label'] = f"Guest-{pin}"
+        session["logged_in_pubkey"] = pin  # 🔸 use PIN as identity key
+        session["logged_in_privkey"] = None  # no privkey needed
+        session["guest_label"] = f"Guest-{pin}"
         print(f"[guest_login] PIN {pin} logged in as Guest-{pin}")
 
     else:
         # Random guest identity
         rand_id = uuid.uuid4().hex[:6]
-        session['logged_in_pubkey'] = f"guest-{rand_id}"
-        session['logged_in_privkey'] = None
-        session['guest_label'] = f"Guest-Random-{rand_id}"
+        session["logged_in_pubkey"] = f"guest-{rand_id}"
+        session["logged_in_privkey"] = None
+        session["guest_label"] = f"Guest-Random-{rand_id}"
         print(f"[guest_login] Random guest logged in as Guest-Random-{rand_id}")
 
-    session['login_method'] = 'guest'
+    session["login_method"] = "guest"
     session.permanent = True
-    return jsonify(ok=True, label=session['guest_label'])
-
-
+    return jsonify(ok=True, label=session["guest_label"])
 
 
 # ---- Special Login ----
 SPECIAL_USERS = [p.strip() for p in os.getenv("SPECIAL_USERS", "").split(",") if p.strip()]
 
-@app.route('/guest_login2', methods=['POST'])
-def guest_login2():
-    data      = request.get_json() or {}
-    challenge = data.get('challenge', '').strip()
 
-    if 'challenge' not in session or session['challenge'] != challenge:
+@app.route("/guest_login2", methods=["POST"])
+def guest_login2():
+    data = request.get_json() or {}
+    challenge = data.get("challenge", "").strip()
+
+    if "challenge" not in session or session["challenge"] != challenge:
         return jsonify(verified=False, error="Invalid or expired challenge"), 400
-    if time.time() - session.get('challenge_timestamp', 0) > 600:
+    if time.time() - session.get("challenge_timestamp", 0) > 600:
         return jsonify(verified=False, error="Challenge expired"), 400
 
-    guest_pk = (GUEST2_PUBKEY.strip() if GUEST2_PUBKEY else f"GUEST2-{uuid.uuid4().hex[:8].upper()}")
+    guest_pk = GUEST2_PUBKEY.strip() if GUEST2_PUBKEY else f"GUEST2-{uuid.uuid4().hex[:8].upper()}"
 
-    session['logged_in_pubkey'] = guest_pk
-    session['access_level']     = 'limited'   # keep same policy as guest #1
-    session.permanent           = True
+    session["logged_in_pubkey"] = guest_pk
+    session["access_level"] = "limited"  # keep same policy as guest #1
+    session.permanent = True
 
-    socketio.emit('user:logged_in', guest_pk)
+    socketio.emit("user:logged_in", guest_pk)
 
-    return jsonify({
-        "verified":     True,
-        "access_level": "limited",
-        "pubkey":       guest_pk
-    })
+    return jsonify({"verified": True, "access_level": "limited", "pubkey": guest_pk})
 
 
-
-def get_save_and_check_balances(script_hex: str, groupings: list[list[tuple[str, Decimal, str]]]) -> tuple[Decimal, Decimal]:
+def get_save_and_check_balances(
+    script_hex: str, groupings: list[list[tuple[str, Decimal, str]]]
+) -> tuple[Decimal, Decimal]:
     """
     Accepts a witness program scriptPubKey hex or a redeem/witness script hex.
     Returns (saving_total, checking_total).
@@ -3075,28 +3108,28 @@ def get_save_and_check_balances(script_hex: str, groupings: list[list[tuple[str,
         * Mixed        -> split by type (P2WPKH => CHECK, P2WSH => SAVE)
         * Fallback     -> shortest=CHECK, longest=SAVE
     """
-    from decimal import Decimal
     import re
+    from decimal import Decimal
 
     def looks_like_segwit_spk(h: str) -> bool:
-        return bool(re.fullmatch(r'00(14[0-9a-fA-F]{40}|20[0-9a-fA-F]{64})', h))
+        return bool(re.fullmatch(r"00(14[0-9a-fA-F]{40}|20[0-9a-fA-F]{64})", h))
 
     def classify(addr: str) -> str:
         a = addr.lower()
         # bech32 v0: bc1q... length ~42 (p2wpkh), ~62 (p2wsh)
-        if a.startswith('bc1p'):
-            return 'taproot'
-        if a.startswith('bc1q'):
-            return 'p2wpkh' if len(a) <= 44 else 'p2wsh'
-        if a.startswith('1'):
-            return 'p2pkh'
-        if a.startswith('3'):
-            return 'p2sh'
-        return 'other'
+        if a.startswith("bc1p"):
+            return "taproot"
+        if a.startswith("bc1q"):
+            return "p2wpkh" if len(a) <= 44 else "p2wsh"
+        if a.startswith("1"):
+            return "p2pkh"
+        if a.startswith("3"):
+            return "p2sh"
+        return "other"
 
-    script_hex = (script_hex or '').strip()
+    script_hex = (script_hex or "").strip()
     if not script_hex:
-        return Decimal('0'), Decimal('0')
+        return Decimal("0"), Decimal("0")
 
     # 1) Compute expected witness program (scriptPubKey) hex
     try:
@@ -3107,8 +3140,8 @@ def get_save_and_check_balances(script_hex: str, groupings: list[list[tuple[str,
             # decode to get segwit.hex if possible
             rpc = get_rpc_connection()
             decoded = rpc.decodescript(script_hex)
-            seg_hex = (decoded.get('segwit') or {}).get('hex')
-            expected_spk_lower = (seg_hex or decoded.get('hex') or script_hex).lower()
+            seg_hex = (decoded.get("segwit") or {}).get("hex")
+            expected_spk_lower = (seg_hex or decoded.get("hex") or script_hex).lower()
     except Exception:
         expected_spk_lower = script_hex.lower()
 
@@ -3118,25 +3151,25 @@ def get_save_and_check_balances(script_hex: str, groupings: list[list[tuple[str,
         for triple in group:
             try:
                 addr, bal = triple[0], Decimal(triple[1])
-                lbl = (triple[2] or '')
+                lbl = triple[2] or ""
                 if isinstance(lbl, str) and lbl.lower().startswith(expected_spk_lower):
                     matches.append((addr, bal))
             except Exception:
                 continue
 
     if not matches:
-        return Decimal('0'), Decimal('0')
+        return Decimal("0"), Decimal("0")
 
     # 3) Type-based split
-    save_total = Decimal('0')
-    check_total = Decimal('0')
+    save_total = Decimal("0")
+    check_total = Decimal("0")
 
     kinds = {classify(a) for a, _ in matches}
-    if kinds == {'p2wpkh'}:
+    if kinds == {"p2wpkh"}:
         # all P2WPKH -> CHECK
         check_total = sum(b for _, b in matches)
         return save_total, check_total
-    if kinds == {'p2wsh'}:
+    if kinds == {"p2wsh"}:
         # all P2WSH -> SAVE
         save_total = sum(b for _, b in matches)
         return save_total, check_total
@@ -3144,20 +3177,19 @@ def get_save_and_check_balances(script_hex: str, groupings: list[list[tuple[str,
     # Mixed: split explicitly
     for addr, bal in matches:
         k = classify(addr)
-        if k == 'p2wpkh':
+        if k == "p2wpkh":
             check_total += bal
-        elif k == 'p2wsh':
-            save_total  += bal
+        elif k == "p2wsh":
+            save_total += bal
 
     if save_total == 0 and check_total == 0:
         # Fallback to length heuristic (shorter=CHECK, longer=SAVE)
         matches.sort(key=lambda ab: len(ab[0]))
         half = len(matches) // 2
         check_total = sum(b for _, b in matches[:half])
-        save_total  = sum(b for _, b in matches[half:])
+        save_total = sum(b for _, b in matches[half:])
 
     return save_total, check_total
-
 
 
 def fetch_btc_price():
@@ -3169,10 +3201,11 @@ def fetch_btc_price():
         )
         resp.raise_for_status()
         j = resp.json()
-        return j.get('bitcoin', {}).get('usd')
+        return j.get("bitcoin", {}).get("usd")
     except Exception as e:
         print(f"[WARN] fetch_btc_price failed: {e}")
         return None
+
 
 def generate_qr_code(data, *, box_size=12, border=4):
     # Use a decent error correction, auto-fit version, proper quiet zone
@@ -3180,7 +3213,7 @@ def generate_qr_code(data, *, box_size=12, border=4):
         version=None,  # let it grow as needed
         error_correction=qrcode.constants.ERROR_CORRECT_Q,  # Q is plenty; H is okay too
         box_size=box_size,  # module size in pixels
-        border=border,      # quiet zone in modules (4 is the ISO minimum)
+        border=border,  # quiet zone in modules (4 is the ISO minimum)
     )
     qr.add_data(data)
     qr.make(fit=True)
@@ -3201,54 +3234,59 @@ def to_npub(hex_pubkey):
         compressed_pubkey = bytes.fromhex(hex_pubkey)
     else:
         raise ValueError("Invalid public key length")
-    
+
     x_only_pub = compressed_pubkey[1:]
     return bech32_encode("npub", convertbits(x_only_pub, 8, 5))
+
 
 def extract_pubkey_from_op_if(asm):
     ops = asm.split()
     for i, op in enumerate(ops):
-        if op == 'OP_IF':
-            for j in range(i+1, min(i+6, len(ops))):
-                if re.fullmatch(r'[0-9a-fA-F]{66}', ops[j]) or re.fullmatch(r'[0-9a-fA-F]{130}', ops[j]):
+        if op == "OP_IF":
+            for j in range(i + 1, min(i + 6, len(ops))):
+                if re.fullmatch(r"[0-9a-fA-F]{66}", ops[j]) or re.fullmatch(r"[0-9a-fA-F]{130}", ops[j]):
                     return ops[j]
     return None
+
 
 def extract_pubkey_from_op_else(asm):
     ops = asm.split()
     try:
         idx = ops.index("OP_ELSE")
-        for token in ops[idx+1:]:
-            if re.fullmatch(r'[0-9a-fA-F]{66}', token) or re.fullmatch(r'[0-9a-fA-F]{130}', token):
+        for token in ops[idx + 1 :]:
+            if re.fullmatch(r"[0-9a-fA-F]{66}", token) or re.fullmatch(r"[0-9a-fA-F]{130}", token):
                 return token
     except ValueError:
         return None
     return None
 
+
 def format_asm(asm):
     ops = asm.split()
     formatted_ops = []
     in_op_if = False
-    
+
     for op in ops:
-        if op == 'OP_IF':
+        if op == "OP_IF":
             in_op_if = True
-        elif op == 'OP_ENDIF':
+        elif op == "OP_ENDIF":
             in_op_if = False
-        
-        if in_op_if and re.fullmatch(r'[0-9a-fA-F]{66}', op):
+
+        if in_op_if and re.fullmatch(r"[0-9a-fA-F]{66}", op):
             formatted_ops.append(f'<span class="clickable-pubkey" onclick="handlePubKeyClick(\'{op}\');">{op}</span>')
         else:
             formatted_ops.append(op)
-    
-    grouped_ops = [' '.join(formatted_ops[i:i+4]) for i in range(0, len(formatted_ops), 4)]
-    return '\n'.join(grouped_ops)
+
+    grouped_ops = [" ".join(formatted_ops[i : i + 4]) for i in range(0, len(formatted_ops), 4)]
+    return "\n".join(grouped_ops)
+
 
 def extract_script_from_raw_descriptor(descriptor):
-    match = re.search(r'raw\((.*?)\)', descriptor)
+    match = re.search(r"raw\((.*?)\)", descriptor)
     if match:
         return match.group(1)
     return None
+
 
 def is_valid_pubkey(pubkey):
     if pubkey.startswith("npub"):
@@ -3259,7 +3297,8 @@ def is_valid_pubkey(pubkey):
             return True
         except Exception:
             return False
-    return bool(re.fullmatch(r'[0-9a-fA-F]{66}', pubkey) or re.fullmatch(r'[0-9a-fA-F]{130}', pubkey))
+    return bool(re.fullmatch(r"[0-9a-fA-F]{66}", pubkey) or re.fullmatch(r"[0-9a-fA-F]{130}", pubkey))
+
 
 def mask_timelocks(text):
     tokens = text.split()
@@ -3273,6 +3312,7 @@ def mask_timelocks(text):
             masked_tokens.append(token)
     return " ".join(masked_tokens)
 
+
 def shorten_pubkey(pubkey):
     byte_len = len(pubkey) // 2
     if byte_len > 31:
@@ -3281,27 +3321,33 @@ def shorten_pubkey(pubkey):
         n = 4
     return pubkey[-n:]
 
+
 def mask_hex_value(hex_value, num_visible=4):
     if len(hex_value) <= num_visible:
         return hex_value
     return "*****" + hex_value[-num_visible:]
 
+
 def clickable_trunc(pubkey):
     short = shorten_pubkey(pubkey)
     return f'<span class="clickable-pubkey" onclick="handlePubKeyClick(\'{pubkey}\');"><span style="color:red;">{short}</span></span>'
 
+
 def mask_raw_descriptor(text):
-    m = re.match(r'raw\((?P<hex>[0-9a-fA-F]+)\)(?P<suffix>.*)', text)
+    m = re.match(r"raw\((?P<hex>[0-9a-fA-F]+)\)(?P<suffix>.*)", text)
     if m:
         hex_data = m.group("hex")
         suffix = m.group("suffix")
-        masked_hex = re.sub(r'(03)[0-9a-fA-F]{6}(?=b1)', r'\1*****', hex_data)
-        masked_hex = re.sub(r'(b17521)((?:[0-9a-fA-F]{66}|[0-9a-fA-F]{130}))',
-                             lambda match_obj: match_obj.group(1) + clickable_trunc(match_obj.group(2)),
-                             masked_hex)
+        masked_hex = re.sub(r"(03)[0-9a-fA-F]{6}(?=b1)", r"\1*****", hex_data)
+        masked_hex = re.sub(
+            r"(b17521)((?:[0-9a-fA-F]{66}|[0-9a-fA-F]{130}))",
+            lambda match_obj: match_obj.group(1) + clickable_trunc(match_obj.group(2)),
+            masked_hex,
+        )
         return f"raw({masked_hex}){suffix}"
     else:
         return text
+
 
 def truncate_address(addr, first=6, last=4):
     if addr and len(addr) > first + last:
@@ -3309,10 +3355,10 @@ def truncate_address(addr, first=6, last=4):
     return addr
 
 
-
 def label_for_index(script_hex: str, i: int) -> str:
     """Canonical label for P2WPKH derived from a zpub for this covenant."""
     return f"{script_hex} [{i}]"
+
 
 def find_first_unused_labeled_address(rpc, script_hex: str, max_scan: int = 20) -> str | None:
     """
@@ -3334,7 +3380,7 @@ def find_first_unused_labeled_address(rpc, script_hex: str, max_scan: int = 20) 
             continue
         for addr in addr_map.keys():
             try:
-                never_received = (rpc.getreceivedbyaddress(addr, 0) == 0)
+                never_received = rpc.getreceivedbyaddress(addr, 0) == 0
                 utxos = rpc.listunspent(0, 9999999, [addr])
                 if never_received and not utxos:
                     return addr
@@ -3343,33 +3389,29 @@ def find_first_unused_labeled_address(rpc, script_hex: str, max_scan: int = 20) 
     return None
 
 
-
-
-
 def zpub_to_xpub(zpub):
     decoded = base58.b58decode(zpub)[:-4]
-    xpub_version_bytes = b'\x04\x88\xb2\x1e'
+    xpub_version_bytes = b"\x04\x88\xb2\x1e"
     xpub_payload = decoded[4:]
     xpub = xpub_version_bytes + xpub_payload
     checksum = sha256(sha256(xpub).digest()).digest()[:4]
     return base58.b58encode(xpub + checksum).decode()
 
+
 def fetch_balance_via_rpc(address):
     rpc = get_rpc_connection()
     utxos = rpc.listunspent(0, 9999999, [address])
-    total_btc = sum(Decimal(u['amount']) for u in utxos)
-    total_sats = int(total_btc * Decimal('100000000'))
+    total_btc = sum(Decimal(u["amount"]) for u in utxos)
+    total_sats = int(total_btc * Decimal("100000000"))
     return total_sats
 
 
-
-
-@app.route('/home', methods=['GET'], endpoint='home')  # 👈 alias keeps url_for('home') working
+@app.route("/home", methods=["GET"], endpoint="home")  # 👈 alias keeps url_for('home') working
 def home_page():
-    access_level   = session.get('access_level', 'limited')
-    initial_pubkey = request.args.get('pubkey', '')
+    access_level = session.get("access_level", "limited")
+    initial_pubkey = request.args.get("pubkey", "")
 
-    html = r'''
+    html = r"""
 <!DOCTYPE html>
 <html>
 <head>
@@ -3414,7 +3456,7 @@ def home_page():
             padding: 0;
             -webkit-tap-highlight-color: transparent;
         }
-        
+
         body {
             margin: 0; /* edge-to-edge canvas */
             background: linear-gradient(135deg, var(--dark-bg) 0%, #0f0f0f 50%, var(--dark-bg) 100%);
@@ -3425,20 +3467,20 @@ def home_page():
             font-size: 16px;
             overflow-x: hidden;
         }
-        
+
         .container {
             max-width: 100%;
             margin: 0 auto;
             padding: var(--spacing-unit);
         }
-        
+
         /* Header */
         .header {
             text-align: center;
             margin-bottom: calc(var(--spacing-unit) * 1.5);
             padding: var(--spacing-unit) 0;
         }
-        
+
         h1 {
             color: var(--neon-green);
             font-size: clamp(1.5rem, 5vw, 2.5rem);
@@ -3449,12 +3491,12 @@ def home_page():
             animation: glow 2s ease-in-out infinite alternate;
             word-break: break-word;
         }
-        
+
         @keyframes glow {
             from { text-shadow: 0 0 15px var(--neon-green); }
             to { text-shadow: 0 0 25px var(--neon-green), 0 0 35px var(--neon-green); }
         }
-        
+
         /* Navigation */
         .nav-bar {
             display: flex;
@@ -3463,7 +3505,7 @@ def home_page():
             margin-bottom: calc(var(--spacing-unit) * 1.5);
             flex-wrap: wrap;
         }
-        
+
         .nav-btn {
             background: transparent;
             color: var(--neon-blue);
@@ -3481,14 +3523,14 @@ def home_page():
             text-align: center;
             touch-action: manipulation;
         }
-        
+
         .nav-btn:hover, .nav-btn:active {
             background: var(--neon-blue);
             color: var(--dark-bg);
             box-shadow: 0 0 15px var(--neon-blue);
             transform: translateY(-1px);
         }
-        
+
         /* Main Grid Layout */
         .main-grid {
             display: grid;
@@ -3496,7 +3538,7 @@ def home_page():
             gap: var(--spacing-unit);
             margin-bottom: calc(var(--spacing-unit) * 1.5);
         }
-        
+
 @media (min-width: 768px) {
   :root { --spacing-unit: 1.5rem; }
 
@@ -3514,7 +3556,7 @@ def home_page():
   }
 }
 
-        
+
         /* Panel Styles */
         .panel {
             background: var(--panel-bg);
@@ -3525,12 +3567,12 @@ def home_page():
             transition: transform 0.3s ease, box-shadow 0.3s ease;
             overflow: hidden;
         }
-        
+
         .panel:hover {
             transform: translateY(-2px);
             box-shadow: 0 6px 20px rgba(0, 255, 0, 0.15);
         }
-        
+
         .panel h2 {
             color: var(--accent-color);
             font-size: clamp(1rem, 4vw, 1.3rem);
@@ -3540,13 +3582,13 @@ def home_page():
             letter-spacing: 0.05em;
             word-break: break-word;
         }
-        
-        
+
+
         /* Form Elements */
         .form-group {
             margin-bottom: var(--spacing-unit);
         }
-        
+
         .form-group label {
             display: block;
             margin-bottom: 0.5rem;
@@ -3554,7 +3596,7 @@ def home_page():
             font-weight: 600;
             font-size: 0.9rem;
         }
-        
+
         input, textarea {
             width: 100%;
             background: rgba(0, 0, 0, 0.4);
@@ -3569,19 +3611,19 @@ def home_page():
             -webkit-appearance: none;
             appearance: none;
         }
-        
+
         input:focus, textarea:focus {
             outline: none;
             border-color: var(--neon-green);
             box-shadow: 0 0 0 3px rgba(0, 255, 0, 0.2);
         }
-        
+
         textarea {
             resize: vertical;
             min-height: 120px;
             font-family: 'Courier New', monospace;
         }
-        
+
         /* Button Styles */
         .btn {
             width: 100%;
@@ -3603,19 +3645,19 @@ def home_page():
             -webkit-appearance: none;
             appearance: none;
         }
-        
+
         .btn:hover, .btn:active {
             background: var(--neon-green);
             color: var(--dark-bg);
             box-shadow: 0 0 15px var(--neon-green);
             transform: translateY(-1px);
         }
-        
+
         .btn-secondary {
             border-color: var(--neon-blue);
             color: var(--neon-blue);
         }
-        
+
         .btn-secondary:hover, .btn-secondary:active {
             background: var(--neon-blue);
             color: var(--dark-bg);
@@ -3648,7 +3690,7 @@ def home_page():
   color: #ff8888;
 }
 
-        
+
         /* Balance Summary */
         .balance-summary {
             display: flex;
@@ -3663,28 +3705,28 @@ def home_page():
             flex-wrap: wrap;
             gap: 0.5rem;
         }
-        
+
         .balance-item {
             flex: 1;
             min-width: 120px;
         }
-        
+
         .balance-label {
             font-size: 0.8rem;
             opacity: 0.8;
             display: block;
         }
-        
+
         .balance-value {
             font-size: clamp(1rem, 3vw, 1.2rem);
             font-weight: bold;
             margin-top: 0.25rem;
             word-break: break-all;
         }
-        
+
         .balance-in { color: var(--neon-green); }
         .balance-out { color: var(--neon-blue); }
-        
+
         /* Loading Animation */
         .loading {
             text-align: center;
@@ -3692,16 +3734,16 @@ def home_page():
             padding: var(--spacing-unit);
             display: none;
         }
-        
+
         .loading-text {
             animation: pulse 1.5s ease-in-out infinite;
         }
-        
+
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
         }
-        
+
         /* Contract Display */
         .contracts-container {
             margin-top: var(--spacing-unit);
@@ -3726,17 +3768,17 @@ def home_page():
             transition: border-color 0.3s ease;
             overflow: hidden;
         }
-        
+
         .contract-box.input-role {
             border-color: var(--neon-green);
             background: rgba(0, 255, 0, 0.05);
         }
-        
+
         .contract-box.output-role {
             border-color: var(--neon-blue);
             background: rgba(0, 191, 255, 0.05);
         }
-        
+
         .contract-box pre {
           background: transparent;
           padding: 0.25rem 0;
@@ -3749,7 +3791,7 @@ def home_page():
           word-break: break-all;
           white-space: pre-wrap;
         }
-        
+
 /* Lock the page when scanner is open */
 .body-locked {
   height: 100dvh;
@@ -3786,20 +3828,20 @@ def home_page():
   right: max(12px, env(safe-area-inset-right));
   z-index: 100000;
 }
-        
+
         /* RPC Section */
         .rpc-section {
             grid-column: 1 / -1;
             margin-top: var(--spacing-unit);
         }
-        
+
         .rpc-buttons {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
             gap: 0.75rem;
             margin-bottom: var(--spacing-unit);
         }
-        
+
         .rpc-buttons .btn {
             font-size: 0.8rem;
             padding: 0.6rem;
@@ -3807,7 +3849,7 @@ def home_page():
             overflow: hidden;
             text-overflow: ellipsis;
         }
-        
+
         .rpc-response {
             background: rgba(0, 0, 0, 0.5);
             border: 1px solid var(--border-color);
@@ -3820,7 +3862,7 @@ def home_page():
             overflow-y: auto;
             word-break: break-all;
         }
-        
+
         /* QR Codes Display */
 .qr-codes img {
   image-rendering: pixelated; /* keeps sharp edges */
@@ -3842,19 +3884,19 @@ def home_page():
             margin-top: var(--spacing-unit);
             align-items: center;
         }
-        
+
         .qr-codes figure {
             text-align: center;
             margin: 0;
         }
-        
+
         .qr-codes img {
             max-width: 100%;
             height: auto;
             border-radius: 8px;
             box-shadow: 0 4px 15px rgba(0, 255, 0, 0.2);
         }
-        
+
         .qr-codes figcaption {
             color: var(--accent-color);
             font-size: clamp(0.7rem, 2.5vw, 0.8rem);
@@ -3862,7 +3904,7 @@ def home_page():
             font-weight: bold;
             word-break: break-word;
         }
-        
+
         /* Clickable elements */
         .clickable-pubkey {
             cursor: pointer;
@@ -3870,11 +3912,11 @@ def home_page():
             transition: color 0.2s ease;
             touch-action: manipulation;
         }
-        
+
         .clickable-pubkey:hover, .clickable-pubkey:active {
             color: var(--neon-blue);
         }
-        
+
         /* Mobile-specific improvements */
         @media (max-width: 767px) {
             .nav-bar {
@@ -3882,63 +3924,63 @@ def home_page():
                 align-items: stretch;
                 gap: 0.75rem;
             }
-            
+
             .nav-btn {
                 width: 100%;
                 justify-content: center;
             }
-            
+
             .balance-summary {
                 flex-direction: column;
                 text-align: center;
             }
-            
+
             .balance-item {
                 width: 100%;
                 margin-bottom: 0.5rem;
             }
-            
+
             .rpc-buttons {
                 grid-template-columns: 1fr;
             }
-            
+
             .qr-codes {
                 grid-template-columns: 1fr;
             }
-            
+
             button, .btn, .nav-btn, input, textarea {
                 min-height: var(--touch-target);
             }
         }
-        
+
         /* Landscape phone adjustments */
         @media (max-height: 500px) and (orientation: landscape) {
             h1 {
                 font-size: 1.5rem;
                 margin-bottom: 0.5rem;
             }
-            
+
             .header {
                 margin-bottom: 1rem;
                 padding: 0.5rem 0;
             }
-            
+
             .nav-bar {
                 margin-bottom: 1rem;
             }
         }
-        
+
         /* iOS Safari specific fixes */
         @supports (-webkit-touch-callout: none) {
             .container {
                 padding-bottom: calc(var(--spacing-unit) + env(safe-area-inset-bottom));
             }
-            
+
             input, textarea {
                 font-size: 16px; /* Prevents zoom */
             }
         }
-        
+
         /* Footer */
         .footer {
             text-align: center;
@@ -3946,7 +3988,7 @@ def home_page():
             padding: var(--spacing-unit);
             border-top: 1px solid var(--border-color);
         }
-        
+
         /* Accessibility improvements */
         @media (prefers-reduced-motion: reduce) {
             * {
@@ -3955,19 +3997,19 @@ def home_page():
                 transition-duration: 0.01ms !important;
             }
         }
-        
+
         /* High contrast mode support */
         @media (prefers-contrast: high) {
             :root {
                 --border-color: #666;
                 --panel-bg: #000;
             }
-            
+
             .panel {
                 border-width: 2px;
             }
         }
-        
+
         .app-title { margin: 0 0 var(--spacing-unit); }
 .home-link {
   color: var(--neon-green);
@@ -4001,7 +4043,7 @@ def home_page():
 <h1 class="app-title">
   <a class="home-link" href="{{ url_for('home') }}">HODLXXI</a>
 </h1>
-            
+
 
                 <div class="manifesto-actions" style="margin-top:1rem; text-align:center;">
       <div style="display:inline-flex; gap:12px; flex-wrap:wrap; align-items:center; justify-content:center;">
@@ -4112,7 +4154,7 @@ This is a Game Theory and Mathematics–driven Design Framework for decentralize
                     <button class="btn" onclick="handleImportDescriptor()">Import</button>
                     <div id="importResult" class="rpc-response" style="margin-top: var(--spacing-unit);"></div>
                 </div>
-                
+
                 <!-- Set Labels Panel -->
                 <div class="panel" style="margin-bottom: var(--spacing-unit);">
                     <h2> Set Checking Labels</h2>
@@ -4287,7 +4329,7 @@ let currentStream = null;
           document.getElementById('loading').style.display = 'block';
           document.getElementById('contracts-container').innerHTML = '';
         }
-        
+
         function hideLoading() {
           document.getElementById('loading').style.display = 'none';
         }
@@ -4373,8 +4415,8 @@ if (descriptor.nostr_npub) {
     nostrSection = `
       <div class="nostr-info" style="margin:0.5rem 0; text-align:center;">
         <strong>Nostr:</strong><br>
-        <a href="https://advancednostrsearch.vercel.app/?npub=${descriptor.nostr_npub}" 
-           target="_blank" 
+        <a href="https://advancednostrsearch.vercel.app/?npub=${descriptor.nostr_npub}"
+           target="_blank"
            style="color:var(--neon-blue); text-decoration:none; display:inline-block; margin-top:0.25rem;">
            ${descriptor.nostr_npub_truncated}
         </a>
@@ -4394,7 +4436,7 @@ let counterpartyNote = '';
 if (counterpartyOnline && counterparty) {
   counterpartyNote = `
     <div style="text-align:center; color:lime; font-size:0.8rem; margin-top:0.25rem;">
-      🟢online 
+      🟢online
     </div>`;
 }
 
@@ -4456,7 +4498,7 @@ ${nostrSection}
         function handlePubKeyClick(pubKey) {
           verifyAndListContracts(pubKey);
         }
-        
+
 function updateScript() {
   const tpl = document.getElementById('initialScript').value;
   const baked = [...tpl.matchAll(/b17521([0-9A-Fa-f]{66})/g)].map(m=>m[1]);
@@ -4611,7 +4653,7 @@ function jumpOnboard(rawHex) {
     document.getElementById("importResult").innerHTML = "Error: " + err;
   });
 }
-        
+
 function setLabelsFromZpub() {
   const zpub  = document.getElementById("zpubInput").value.trim();
   const label = document.getElementById("labelInput").value.trim(); // optional now
@@ -4862,32 +4904,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
     </body>
     </html>
-    '''
+    """
     print(f"[DEBUG] home → access_level={access_level}")
-    return render_template_string(html,
-                             access_level=access_level,
-                             initial_pubkey=initial_pubkey)
-@app.route('/logout')
+    return render_template_string(html, access_level=access_level, initial_pubkey=initial_pubkey)
+
+
+@app.route("/logout")
 def logout():
     session.clear()
-    return redirect(url_for('login'))
-@app.route('/verify_pubkey_and_list', methods=['GET'])
+    return redirect(url_for("login"))
+
+
+@app.route("/verify_pubkey_and_list", methods=["GET"])
 def verify_pubkey_and_list():
     import re
     from decimal import Decimal
 
-    pubkey = request.args.get('pubkey')
+    pubkey = request.args.get("pubkey")
     if not pubkey:
-        return jsonify({'valid': False, 'error': 'No public key provided.'}), 400
-    
+        return jsonify({"valid": False, "error": "No public key provided."}), 400
+
     if not is_valid_pubkey(pubkey):
-        return jsonify({'valid': False, 'error': 'Invalid public key format.'}), 400
+        return jsonify({"valid": False, "error": "Invalid public key format."}), 400
 
     try:
-        rpc           = get_rpc_connection()
-        descriptors   = rpc.listdescriptors().get('descriptors', [])
+        rpc = get_rpc_connection()
+        descriptors = rpc.listdescriptors().get("descriptors", [])
         btc_price_val = fetch_btc_price()
-        btc_price     = Decimal(str(btc_price_val)) if btc_price_val is not None else Decimal('0')
+        btc_price = Decimal(str(btc_price_val)) if btc_price_val is not None else Decimal("0")
         all_groupings = rpc.listaddressgroupings()
 
         def get_balance_by_address(address):
@@ -4895,14 +4939,14 @@ def verify_pubkey_and_list():
                 for addr_item, bal, scr in group:
                     if addr_item == address:
                         return Decimal(str(bal))
-            return Decimal('0')
+            return Decimal("0")
 
         matched = []
 
         for d in descriptors:
-            raw_desc = d['desc']
+            raw_desc = d["desc"]
 
-            if raw_desc.startswith('raw('):
+            if raw_desc.startswith("raw("):
                 masked_raw = mask_raw_descriptor(raw_desc)
             else:
                 masked_raw = mask_timelocks(raw_desc)
@@ -4911,16 +4955,16 @@ def verify_pubkey_and_list():
             if not script:
                 continue
 
-            decoded        = rpc.decodescript(script)
-            asm            = decoded.get('asm', '') or ''
-            script_hex_val = decoded.get('hex') or decoded.get('segwit', {}).get('hex')
+            decoded = rpc.decodescript(script)
+            asm = decoded.get("asm", "") or ""
+            script_hex_val = decoded.get("hex") or decoded.get("segwit", {}).get("hex")
             if not script_hex_val:
                 continue
 
             found = False
             for tok in asm.split():
-                if re.fullmatch(r'[0-9A-Fa-f]{66,130}', tok):
-                    if pubkey.startswith('npub'):
+                if re.fullmatch(r"[0-9A-Fa-f]{66,130}", tok):
+                    if pubkey.startswith("npub"):
                         try:
                             if to_npub(tok) == pubkey:
                                 found = True
@@ -4934,27 +4978,24 @@ def verify_pubkey_and_list():
             if not found:
                 continue
 
-            segwit_addr = (
-                decoded.get('segwit', {}).get('address')
-                or (decoded.get('addresses') or [None])[0]
-            )
+            segwit_addr = decoded.get("segwit", {}).get("address") or (decoded.get("addresses") or [None])[0]
 
-            addr_bal              = get_balance_by_address(segwit_addr) if segwit_addr else Decimal('0')
-            save_bal, check_bal   = get_save_and_check_balances(script_hex_val, all_groupings)
+            addr_bal = get_balance_by_address(segwit_addr) if segwit_addr else Decimal("0")
+            save_bal, check_bal = get_save_and_check_balances(script_hex_val, all_groupings)
 
-            bal_btc   = float(addr_bal)
-            bal_usd   = float(addr_bal * btc_price)
-            save_btc  = float(save_bal)
-            save_usd  = float(save_bal * btc_price)
+            bal_btc = float(addr_bal)
+            bal_usd = float(addr_bal * btc_price)
+            save_btc = float(save_bal)
+            save_usd = float(save_bal * btc_price)
             check_btc = float(check_bal)
             check_usd = float(check_bal * btc_price)
 
-            op_if_pub    = extract_pubkey_from_op_if(asm)
-            op_else_pub  = extract_pubkey_from_op_else(asm)
-            op_if_npub   = to_npub(op_if_pub) if op_if_pub else None
+            op_if_pub = extract_pubkey_from_op_if(asm)
+            op_else_pub = extract_pubkey_from_op_else(asm)
+            op_if_npub = to_npub(op_if_pub) if op_if_pub else None
             op_else_npub = to_npub(op_else_pub) if op_else_pub else None
 
-            nostr_npub     = to_npub(op_if_pub) if op_if_pub else None
+            nostr_npub = to_npub(op_if_pub) if op_if_pub else None
             truncated_npub = truncate_address(nostr_npub) if nostr_npub else None
 
             # Determine which pubkey is the covenant partner (not the user)
@@ -4967,78 +5008,78 @@ def verify_pubkey_and_list():
 
             counterparty_online = counterparty_pubkey in ONLINE_USERS if counterparty_pubkey else False
 
-            is_full = (session.get('access_level') == 'full')
+            is_full = session.get("access_level") == "full"
             script_raw = script if (isinstance(script, str) and script) else script_hex_val
             raw_script_for_ui = script_raw if is_full else None
-            onboard_link      = f"#onboard?raw={script_raw}&autoverify=1" if is_full and script_raw else None
+            onboard_link = f"#onboard?raw={script_raw}&autoverify=1" if is_full and script_raw else None
 
-            matched.append({
-                'raw':                  masked_raw,
-                'asm':                  format_asm(asm),
-                'address':              segwit_addr,
-                'truncated_address':    truncate_address(segwit_addr) if segwit_addr else None,
-                'qr_code':              generate_qr_code(segwit_addr) if segwit_addr else None,
-                'balance_usd':          f"{bal_usd:.2f}",
-                'nostr_npub':           nostr_npub,
-                'nostr_npub_truncated': truncated_npub,
-                'op_if_pub':            op_if_pub,
-                'op_else_pub':          op_else_pub,
-                'script_hex':           mask_hex_value(script_hex_val),
-                'saving_balance_usd':   f"{save_usd:.2f}",
-                'checking_balance_usd': f"{check_usd:.2f}",
-                'counterparty_online':  counterparty_online,
-                'counterparty_pubkey':  counterparty_pubkey,
-                'op_if_npub':           op_if_npub,
-                'op_else_npub':         op_else_npub,
-                # full-access only
-                'raw_script':           raw_script_for_ui,
-                'onboard_link':         onboard_link
-            })
+            matched.append(
+                {
+                    "raw": masked_raw,
+                    "asm": format_asm(asm),
+                    "address": segwit_addr,
+                    "truncated_address": truncate_address(segwit_addr) if segwit_addr else None,
+                    "qr_code": generate_qr_code(segwit_addr) if segwit_addr else None,
+                    "balance_usd": f"{bal_usd:.2f}",
+                    "nostr_npub": nostr_npub,
+                    "nostr_npub_truncated": truncated_npub,
+                    "op_if_pub": op_if_pub,
+                    "op_else_pub": op_else_pub,
+                    "script_hex": mask_hex_value(script_hex_val),
+                    "saving_balance_usd": f"{save_usd:.2f}",
+                    "checking_balance_usd": f"{check_usd:.2f}",
+                    "counterparty_online": counterparty_online,
+                    "counterparty_pubkey": counterparty_pubkey,
+                    "op_if_npub": op_if_npub,
+                    "op_else_npub": op_else_npub,
+                    # full-access only
+                    "raw_script": raw_script_for_ui,
+                    "onboard_link": onboard_link,
+                }
+            )
 
         if not matched:
-            return jsonify({'valid': False, 'error': 'No matching descriptors found.'}), 404
+            return jsonify({"valid": False, "error": "No matching descriptors found."}), 404
 
-        return jsonify({'valid': True, 'descriptors': matched}), 200
+        return jsonify({"valid": True, "descriptors": matched}), 200
 
     except Exception as e:
         print(f"Error in verify_pubkey_and_list: {str(e)}")
-        return jsonify({'valid': False, 'error': str(e)}), 500
+        return jsonify({"valid": False, "error": str(e)}), 500
 
 
-
-
-@app.route('/decode_raw_script', methods=['POST'])
+@app.route("/decode_raw_script", methods=["POST"])
 def decode_raw_script():
-    data       = request.get_json(silent=True) or {}
-    raw_script = (data.get('raw_script') or '').strip()
+    data = request.get_json(silent=True) or {}
+    raw_script = (data.get("raw_script") or "").strip()
 
     if not raw_script:
         return jsonify({"error": "No raw script provided."}), 400
-    raw_script = re.sub(r'[^0-9A-Fa-f]', '', raw_script)
+    raw_script = re.sub(r"[^0-9A-Fa-f]", "", raw_script)
     if not raw_script:
         return jsonify({"error": "Script must contain hex characters only."}), 400
 
     try:
-        rpc      = get_rpc_connection()
-        decoded  = rpc.decodescript(raw_script)
-        info     = rpc.getdescriptorinfo(f"raw({raw_script})")
-        full_desc= info['descriptor']
+        rpc = get_rpc_connection()
+        decoded = rpc.decodescript(raw_script)
+        info = rpc.getdescriptorinfo(f"raw({raw_script})")
+        full_desc = info["descriptor"]
 
-        asm       = decoded.get('asm', '')
-        op_if     = extract_pubkey_from_op_if(asm)
-        op_else   = extract_pubkey_from_op_else(asm)
-        npub_if   = to_npub(op_if)   if op_if   else None
+        asm = decoded.get("asm", "")
+        op_if = extract_pubkey_from_op_if(asm)
+        op_else = extract_pubkey_from_op_else(asm)
+        npub_if = to_npub(op_if) if op_if else None
         npub_else = to_npub(op_else) if op_else else None
 
-        seg        = (decoded.get('segwit') or {})
-        seg_addr   = seg.get('address')
-        script_hex = seg.get('hex')  # canonical label base
+        seg = decoded.get("segwit") or {}
+        seg_addr = seg.get("address")
+        script_hex = seg.get("hex")  # canonical label base
 
         # ---------- STRICT "first unused" policy ----------
         # Only surface first-unused if it was created by Set Checking Labels
         # (i.e., labels of the form "<script_hex> [i]").
         first_unused_addr = None
-        warning_message   = None
+        warning_message = None
 
         if script_hex:
             # Only look for "<script_hex> [i]" labels
@@ -5046,44 +5087,41 @@ def decode_raw_script():
 
             # If not found, do NOT fall back to any other label search.
             if not first_unused_addr:
-                warning_message = (
-                    "Set Checking Labels"
-                )
+                warning_message = "Set Checking Labels"
 
-        return jsonify({
-            "decoded": decoded,
-            "qr": {
-                "full_descriptor":   generate_qr_code(full_desc) if full_desc else None,
-                "segwit_address":    generate_qr_code(seg_addr)  if seg_addr  else None,
-                "pubkey_if":         generate_qr_code(npub_if)   if npub_if   else None,
-                "pubkey_else":       generate_qr_code(npub_else) if npub_else else None,
-                "first_unused_addr": generate_qr_code(first_unused_addr) if first_unused_addr else None,
-                "raw_script_hex":    generate_qr_code(raw_script) if raw_script else None
-            },
-            "first_unused_addr_text": first_unused_addr,
-            "script_hex": script_hex,
-            "warning": warning_message
-        })
+        return jsonify(
+            {
+                "decoded": decoded,
+                "qr": {
+                    "full_descriptor": generate_qr_code(full_desc) if full_desc else None,
+                    "segwit_address": generate_qr_code(seg_addr) if seg_addr else None,
+                    "pubkey_if": generate_qr_code(npub_if) if npub_if else None,
+                    "pubkey_else": generate_qr_code(npub_else) if npub_else else None,
+                    "first_unused_addr": generate_qr_code(first_unused_addr) if first_unused_addr else None,
+                    "raw_script_hex": generate_qr_code(raw_script) if raw_script else None,
+                },
+                "first_unused_addr_text": first_unused_addr,
+                "script_hex": script_hex,
+                "warning": warning_message,
+            }
+        )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/import_descriptor', methods=['POST'])
+@app.route("/import_descriptor", methods=["POST"])
 def import_descriptor():
     require_full_access()
     data = request.get_json()
-    raw_descriptor = data.get('descriptor', '').strip()
+    raw_descriptor = data.get("descriptor", "").strip()
     if not raw_descriptor:
         return jsonify({"error": "No descriptor provided."}), 400
 
     try:
         rpc = get_rpc_connection()
-        import_result = rpc.importdescriptors([{
-            "desc": raw_descriptor,
-            "timestamp": "now",
-            "active": False,
-            "watchonly": True
-        }])
+        import_result = rpc.importdescriptors(
+            [{"desc": raw_descriptor, "timestamp": "now", "active": False, "watchonly": True}]
+        )
 
         if raw_descriptor.startswith("raw("):
             script = extract_script_from_raw_descriptor(raw_descriptor)
@@ -5093,38 +5131,45 @@ def import_descriptor():
             script_hex = segwit.get("hex")
 
             if not address or not script_hex:
-                return jsonify({
-                    "success": False,
-                    "error": "Could not extract address or script hex from decoded script."
-                })
+                return jsonify(
+                    {"success": False, "error": "Could not extract address or script hex from decoded script."}
+                )
 
             descriptor_info = rpc.getdescriptorinfo(f"addr({address})")
             address_descriptor = descriptor_info["descriptor"]
-            label_import_result = rpc.importdescriptors([{
-                "desc": address_descriptor,
-                "timestamp": "now",
-                "active": False,
-                "watchonly": True,
-                "label": script_hex
-            }])
-            return jsonify({
+            label_import_result = rpc.importdescriptors(
+                [
+                    {
+                        "desc": address_descriptor,
+                        "timestamp": "now",
+                        "active": False,
+                        "watchonly": True,
+                        "label": script_hex,
+                    }
+                ]
+            )
+            return jsonify(
+                {
+                    "success": True,
+                    "import_result": import_result,
+                    "label_import_result": label_import_result,
+                    "address": address,
+                    "script_hex": script_hex,
+                    "address_descriptor": address_descriptor,
+                }
+            )
+        return jsonify(
+            {
                 "success": True,
                 "import_result": import_result,
-                "label_import_result": label_import_result,
-                "address": address,
-                "script_hex": script_hex,
-                "address_descriptor": address_descriptor
-            })
-        return jsonify({
-            "success": True,
-            "import_result": import_result,
-            "note": "Descriptor was not raw(), so address import skipped."
-        })
+                "note": "Descriptor was not raw(), so address import skipped.",
+            }
+        )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/set_labels_from_zpub', methods=['POST'])
+@app.route("/set_labels_from_zpub", methods=["POST"])
 def set_labels_from_zpub():
     """
     Labels the first 20 external P2WPKH addresses derived from a given zpub
@@ -5136,39 +5181,35 @@ def set_labels_from_zpub():
         return guard
 
     try:
-        data        = request.get_json(silent=True) or {}
-        zpub        = (data.get('zpub') or '').strip()
-        label_input = (data.get('label') or '').strip()
-        script_hex  = (data.get('script_hex') or '').strip()
+        data = request.get_json(silent=True) or {}
+        zpub = (data.get("zpub") or "").strip()
+        label_input = (data.get("label") or "").strip()
+        script_hex = (data.get("script_hex") or "").strip()
 
         if not zpub:
             return jsonify(error="zpub is required."), 400
 
-        rpc  = get_rpc_connection()
+        rpc = get_rpc_connection()
         xpub = zpub_to_xpub(zpub)  # your helper that converts zpub → xpub
 
         # --- Import/activate the first 20 external P2WPKH addrs for this xpub
-        info      = rpc.getdescriptorinfo(f"wpkh({xpub}/0/*)")
+        info = rpc.getdescriptorinfo(f"wpkh({xpub}/0/*)")
         wpkh_desc = info["descriptor"]
-        rng       = [0, 19]
-        rpc.importdescriptors([{
-            "desc":      wpkh_desc,
-            "timestamp": "now",
-            "active":    True,
-            "range":     rng,
-            "watchonly": True
-        }])
+        rng = [0, 19]
+        rpc.importdescriptors(
+            [{"desc": wpkh_desc, "timestamp": "now", "active": True, "range": rng, "watchonly": True}]
+        )
         addrs = rpc.deriveaddresses(wpkh_desc, rng)
 
         # --------- Determine script_hex robustly ----------
         # 1) If provided explicitly, honor it
-        if not script_hex and label_input and re.fullmatch(r'[0-9A-Fa-f]{8,}', label_input):
+        if not script_hex and label_input and re.fullmatch(r"[0-9A-Fa-f]{8,}", label_input):
             # Back-compat: if "label" looks like hex, treat as script_hex
             script_hex = label_input
 
         # Helper: extract inner raw(...) even if wrapped (wsh(raw(...)), etc.)
         def _extract_raw_hex_any(desc: str) -> str | None:
-            m = re.search(r'raw\(([0-9A-Fa-f]+)\)', desc)
+            m = re.search(r"raw\(([0-9A-Fa-f]+)\)", desc)
             return m.group(1) if m else None
 
         if not script_hex:
@@ -5178,8 +5219,8 @@ def set_labels_from_zpub():
             except Exception:
                 existing_labels = set()
 
-            for desc_obj in rpc.listdescriptors().get('descriptors', []):
-                d = desc_obj.get('desc', '')
+            for desc_obj in rpc.listdescriptors().get("descriptors", []):
+                d = desc_obj.get("desc", "")
                 raw = _extract_raw_hex_any(d)
                 if not raw:
                     continue
@@ -5187,7 +5228,7 @@ def set_labels_from_zpub():
                     dec = rpc.decodescript(raw)
                 except Exception:
                     continue
-                seg_hex = (dec.get('segwit') or {}).get('hex')
+                seg_hex = (dec.get("segwit") or {}).get("hex")
                 if seg_hex and (seg_hex in existing_labels):
                     script_hex = seg_hex
                     break
@@ -5197,18 +5238,18 @@ def set_labels_from_zpub():
             derived_pubkeys = []
             for i in range(20):
                 try:
-                    kd   = f"wpkh({xpub}/0/{i})"
-                    din  = rpc.getdescriptorinfo(kd)["descriptor"]
+                    kd = f"wpkh({xpub}/0/{i})"
+                    din = rpc.getdescriptorinfo(kd)["descriptor"]
                     addr = rpc.deriveaddresses(din)[0]
                     info = rpc.getaddressinfo(addr)
-                    pk   = info.get('pubkey')
+                    pk = info.get("pubkey")
                     if pk:
                         derived_pubkeys.append(pk)
                 except Exception:
                     continue
 
-            for desc_obj in rpc.listdescriptors().get('descriptors', []):
-                d = desc_obj.get('desc', '')
+            for desc_obj in rpc.listdescriptors().get("descriptors", []):
+                d = desc_obj.get("desc", "")
                 raw = _extract_raw_hex_any(d)
                 if not raw:
                     continue
@@ -5217,65 +5258,67 @@ def set_labels_from_zpub():
                 except Exception:
                     continue
 
-                asm   = dec.get('asm', '')
-                k_if   = extract_pubkey_from_op_if(asm)   or ''
-                k_else = extract_pubkey_from_op_else(asm) or ''
+                asm = dec.get("asm", "")
+                k_if = extract_pubkey_from_op_if(asm) or ""
+                k_else = extract_pubkey_from_op_else(asm) or ""
                 if (k_if in derived_pubkeys) or (k_else in derived_pubkeys):
-                    seg_hex = (dec.get('segwit') or {}).get('hex')
+                    seg_hex = (dec.get("segwit") or {}).get("hex")
                     if seg_hex:
                         script_hex = seg_hex
                         break
 
         if not script_hex:
-            return jsonify(error="Could not determine script_hex. Provide it explicitly or import your covenant first."), 400
+            return (
+                jsonify(error="Could not determine script_hex. Provide it explicitly or import your covenant first."),
+                400,
+            )
 
         # ---------- Label derived addresses ----------
         labeled = []
         for i, a in enumerate(addrs):
             L = f"{script_hex} [{i}]"
             rpc.setlabel(a, L)
-            labeled.append({
-                "index": i,
-                "address": a,
-                "type": "wpkh",
-                "label": L,
-                "qr": generate_qr_code(a)  # your helper
-            })
+            labeled.append(
+                {"index": i, "address": a, "type": "wpkh", "label": L, "qr": generate_qr_code(a)}  # your helper
+            )
 
-        return jsonify({
-            "success": True,
-            "descriptor": wpkh_desc,
-            "range": rng,
-            "script_hex": script_hex,
-            "labeled_addresses": labeled
-        }), 200
+        return (
+            jsonify(
+                {
+                    "success": True,
+                    "descriptor": wpkh_desc,
+                    "range": rng,
+                    "script_hex": script_hex,
+                    "labeled_addresses": labeled,
+                }
+            ),
+            200,
+        )
 
     except Exception as e:
         return jsonify(error=str(e)), 500
 
 
-
-
 def slip132_to_bip32_pub(extkey: str):
     raw = base58.b58decode(extkey)
     payload, chk = raw[:-4], raw[-4:]
-    ver   = payload[:4]
+    ver = payload[:4]
     depth = payload[4]
-    child = int.from_bytes(payload[9:13], 'big')
+    child = int.from_bytes(payload[9:13], "big")
 
-    ver_int = int.from_bytes(ver, 'big')
+    ver_int = int.from_bytes(ver, "big")
     MAIN = {0x0488B21E, 0x049D7CB2, 0x04B24746}  # xpub/ypub/zpub
     TEST = {0x043587CF, 0x044A5262, 0x045F1CF6}  # tpub/upub/vpub
 
     if ver_int in MAIN:
-        target_ver = b'\x04\x88\xb2\x1e'  # xpub
-        net = 'main'
+        target_ver = b"\x04\x88\xb2\x1e"  # xpub
+        net = "main"
     elif ver_int in TEST:
-        target_ver = b'\x04\x35\x87\xcf'  # tpub
-        net = 'test'
+        target_ver = b"\x04\x35\x87\xcf"  # tpub
+        net = "test"
     else:
         target_ver = ver
-        net = 'unknown'
+        net = "unknown"
 
     bip32 = target_ver + payload[4:]
     checksum = sha256(sha256(bip32).digest()).digest()[:4]
@@ -5287,29 +5330,27 @@ def require_full_access_json():
     JSON-only guard. Return a (response, status) tuple when access is insufficient,
     otherwise return None and let the caller continue.
     """
-    if session.get('access_level') == 'full':
+    if session.get("access_level") == "full":
         return None
     return jsonify(ok=False, error="Full access required"), 403
 
 
-
-
-@app.route('/rpc/<cmd>', methods=['GET'])
+@app.route("/rpc/<cmd>", methods=["GET"])
 def rpc_dispatch(cmd):
     require_full_access()
     rpc = get_rpc_connection()
     allowed = {
-        'getwalletinfo':         lambda: rpc.getwalletinfo(),
-        'listdescriptors':       lambda: rpc.listdescriptors(),
-        'getreceivedbylabel':    lambda: rpc.getreceivedbylabel(request.args.get('p','')),
-        'listtransactions':      lambda: rpc.listtransactions(),
-        'listunspent':           lambda: rpc.listunspent(),
-        'listreceivedbylabel':   lambda: rpc.listreceivedbylabel(),
-        'listreceivedbyaddress': lambda: rpc.listreceivedbyaddress(),
-        'listaddressgroupings':  lambda: rpc.listaddressgroupings(),
-        'listlabels':            lambda: rpc.listlabels(),
-        'getbalance':            lambda: rpc.getbalance(),
-        'rescanblockchain':      lambda: rpc.rescanblockchain(),
+        "getwalletinfo": lambda: rpc.getwalletinfo(),
+        "listdescriptors": lambda: rpc.listdescriptors(),
+        "getreceivedbylabel": lambda: rpc.getreceivedbylabel(request.args.get("p", "")),
+        "listtransactions": lambda: rpc.listtransactions(),
+        "listunspent": lambda: rpc.listunspent(),
+        "listreceivedbylabel": lambda: rpc.listreceivedbylabel(),
+        "listreceivedbyaddress": lambda: rpc.listreceivedbyaddress(),
+        "listaddressgroupings": lambda: rpc.listaddressgroupings(),
+        "listlabels": lambda: rpc.listlabels(),
+        "getbalance": lambda: rpc.getbalance(),
+        "rescanblockchain": lambda: rpc.rescanblockchain(),
     }
     if cmd not in allowed:
         return jsonify({"error": f"Unsupported RPC method `{cmd}`"}), 400
@@ -5319,49 +5360,44 @@ def rpc_dispatch(cmd):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/export_descriptors', methods=['GET'])
+
+@app.route("/export_descriptors", methods=["GET"])
 def export_descriptors():
     # only full-access users may export
-    if session.get('access_level') != 'full':
+    if session.get("access_level") != "full":
         return jsonify({"error": "Full access required."}), 403
 
     rpc = get_rpc_connection()
     # rpc.listdescriptors() returns {"descriptors": [ { "desc": "...", ... }, ... ]}
-    all_descs = rpc.listdescriptors().get('descriptors', [])
+    all_descs = rpc.listdescriptors().get("descriptors", [])
 
     # filter for raw(...) and wpkh(...)
     filtered = [
-        d['desc'] for d in all_descs
-        if d.get('desc', '').startswith('raw(')
-           or d.get('desc', '').startswith('wpkh(')
+        d["desc"] for d in all_descs if d.get("desc", "").startswith("raw(") or d.get("desc", "").startswith("wpkh(")
     ]
 
     return jsonify({"descriptors": filtered})
 
+
 # ---------------- Wallet export ----------------
-@app.route('/export_wallet', methods=['GET'])
+@app.route("/export_wallet", methods=["GET"])
 def export_wallet():
-    if session.get('access_level') != 'full':
+    if session.get("access_level") != "full":
         return jsonify(error="Full access required"), 403
 
-    backup_path = '/tmp/wallet-backup.dat'
+    backup_path = "/tmp/wallet-backup.dat"
     rpc = get_rpc_connection()
     rpc.backupwallet(backup_path)
 
-    return send_file(
-        backup_path,
-        as_attachment=True,
-        download_name=f"{WALLET}.dat"
-    )
-
-
-
+    return send_file(backup_path, as_attachment=True, download_name=f"{WALLET}.dat")
 
 
 @app.route("/convert_wif", methods=["POST"])
 def convert_wif():
-    import io, base64
-    from flask import request, jsonify
+    import base64
+    import io
+
+    from flask import jsonify, request
 
     try:
         data = request.get_json(force=True)
@@ -5394,23 +5430,13 @@ def convert_wif():
         return jsonify({"ok": False, "error": str(e)}), 400
 
 
-
-
-
-
-
-
-
-PUBLIC_API_PREFIXES = (
-    "/api/lnurl-auth/",   # includes /callback/<sid> and /check/<sid>
-)
+PUBLIC_API_PREFIXES = ("/api/lnurl-auth/",)  # includes /callback/<sid> and /check/<sid>
 PUBLIC_API_PATHS = (
     "/api/lnurl-auth/create",
     "/api/lnurl-auth/params",
-    "/api/challenge",     # your existing challenge endpoint
-    "/api/verify",        # your existing verify endpoint
+    "/api/challenge",  # your existing challenge endpoint
+    "/api/verify",  # your existing verify endpoint
 )
-
 
 
 @app.before_request
@@ -5422,8 +5448,15 @@ def _public_guard_for_lnurl():
         return None
 
     # Allow discovery + OAuth core
-    if p in ("/.well-known/openid-configuration", "/oauth/token", "/oauth/register",
-             "/oauth/jwks.json", "/oauthx/status", "/oauthx/docs", "/oauth/authorize"):
+    if p in (
+        "/.well-known/openid-configuration",
+        "/oauth/token",
+        "/oauth/register",
+        "/oauth/jwks.json",
+        "/oauthx/status",
+        "/oauthx/docs",
+        "/oauth/authorize",
+    ):
         return None
 
     # Allow your public API paths (LNURL-Auth, challenge, verify)
@@ -5442,13 +5475,12 @@ def _public_guard_for_lnurl():
     return None
 
 
-
-
 def mint_access_token(sub: str, scope: str = "basic") -> str:
     """
     Minimal placeholder token generator — not a real JWT.
     """
     import secrets
+
     token = base64.urlsafe_b64encode(secrets.token_bytes(24)).decode().rstrip("=")
     return f"{sub}.{token}"
 
@@ -5483,12 +5515,10 @@ def is_valid_pubkey(pubkey: str) -> bool:
         return False
 
 
-
-
-@app.route('/api/challenge', methods=['POST'])
+@app.route("/api/challenge", methods=["POST"])
 def api_challenge():
     data = request.get_json() or {}
-    pubkey = (data.get('pubkey') or '').strip()
+    pubkey = (data.get("pubkey") or "").strip()
     if not pubkey or not is_valid_pubkey(pubkey):
         return jsonify(error="Missing or invalid pubkey"), 400
 
@@ -5499,30 +5529,25 @@ def api_challenge():
         "challenge": challenge,
         "created": datetime.utcnow(),
         "expires": datetime.utcnow() + timedelta(minutes=5),
-        "method": data.get("method", "api")
+        "method": data.get("method", "api"),
     }
     return jsonify(challenge_id=cid, challenge=challenge, expires_in=300)
 
 
-
-
-
-
-
-@app.route('/api/verify', methods=['POST'])
+@app.route("/api/verify", methods=["POST"])
 def api_verify():
     data = request.get_json() or {}
-    cid = (data.get('challenge_id') or '').strip()
-    pubkey = (data.get('pubkey') or '').strip()
-    signature = (data.get('signature') or '').strip()
+    cid = (data.get("challenge_id") or "").strip()
+    pubkey = (data.get("pubkey") or "").strip()
+    signature = (data.get("signature") or "").strip()
 
     if not (cid and pubkey and signature):
         return jsonify(error="Missing required parameters"), 400
 
     rec = ACTIVE_CHALLENGES.get(cid)
-    if not rec or rec['expires'] < datetime.utcnow():
+    if not rec or rec["expires"] < datetime.utcnow():
         return jsonify(error="Invalid or expired challenge"), 400
-    if rec['pubkey'] != pubkey:
+    if rec["pubkey"] != pubkey:
         return jsonify(error="Pubkey mismatch"), 400
 
     method = rec.get("method", "api")
@@ -5539,9 +5564,9 @@ def api_verify():
     else:
         # Default: Bitcoin RPC verification
         try:
-            rpc  = get_rpc_connection()
+            rpc = get_rpc_connection()
             addr = derive_legacy_address_from_pubkey(pubkey)
-            ok   = rpc.verifymessage(addr, signature, rec['challenge'])
+            ok = rpc.verifymessage(addr, signature, rec["challenge"])
         except Exception as e:
             return jsonify(error=f"Signature verification failed: {e}"), 500
 
@@ -5551,18 +5576,20 @@ def api_verify():
     # --- 🔹 Determine access level ---
     try:
         in_total, out_total = get_save_and_check_balances_for_pubkey(pubkey)
-        ratio  = (out_total / in_total) if in_total > 0 else 0
-        access = 'full' if ratio >= 1 else 'limited'
+        ratio = (out_total / in_total) if in_total > 0 else 0
+        access = "full" if ratio >= 1 else "limited"
     except Exception:
-        access = 'limited'
+        access = "limited"
 
-    access_token  = mint_access_token(sub=pubkey, scope="basic")
+    access_token = mint_access_token(sub=pubkey, scope="basic")
     refresh_token = None
-    if 'REFRESH_STORE' in globals():
+    if "REFRESH_STORE" in globals():
         token = base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
         REFRESH_STORE[token] = {
-            "sub": pubkey, "scope": "basic",
-            "exp": int(time.time()) + 30*24*3600, "jti": str(uuid.uuid4())
+            "sub": pubkey,
+            "scope": "basic",
+            "exp": int(time.time()) + 30 * 24 * 3600,
+            "jti": str(uuid.uuid4()),
         }
         refresh_token = token
 
@@ -5575,23 +5602,17 @@ def api_verify():
         "refresh_token": refresh_token,
         "expires_in": 900,
         "pubkey": pubkey,
-        "access_level": access
+        "access_level": access,
     }
     resp = jsonify(payload)
     resp = _finish_login(resp, pubkey, access)
     return resp
 
 
-
-
-
-
-
-
-@app.route('/special_login', methods=['POST'])
+@app.route("/special_login", methods=["POST"])
 def special_login():
     data = request.get_json(silent=True) or {}
-    signature = (data.get('signature') or '').strip()
+    signature = (data.get("signature") or "").strip()
 
     if not signature:
         return jsonify(error="Signature required", verified=False), 400
@@ -5607,8 +5628,8 @@ def special_login():
             addr = derive_legacy_address_from_pubkey(pubkey)
             if rpc.verifymessage(addr, signature, challenge):
                 # Session
-                session['logged_in_pubkey'] = pubkey
-                session['access_level'] = 'special'
+                session["logged_in_pubkey"] = pubkey
+                session["access_level"] = "special"
                 payload = {
                     "verified": True,
                     "pubkey": pubkey,
@@ -5623,37 +5644,35 @@ def special_login():
     return jsonify(error="Invalid signature for all special users", verified=False), 403
 
 
-
 # ---- Legacy message-signature verification (JSON-only) ----
 
 
-
-@app.route('/verify_signature', methods=['POST'])
+@app.route("/verify_signature", methods=["POST"])
 def verify_signature_legacy():
     from flask import jsonify, request, session
 
     data = request.get_json(silent=True) or {}
-    pubkey    = (data.get('pubkey') or '').strip()       # compressed hex (02/03...)
-    signature = (data.get('signature') or '').strip()    # wallet base64 (Electrum/Sparrow/Core)
-    challenge = (data.get('challenge') or '').strip()    # shown on the Legacy tab
+    pubkey = (data.get("pubkey") or "").strip()  # compressed hex (02/03...)
+    signature = (data.get("signature") or "").strip()  # wallet base64 (Electrum/Sparrow/Core)
+    challenge = (data.get("challenge") or "").strip()  # shown on the Legacy tab
 
     # Basic input
     if not signature or not challenge:
         return jsonify(error="Missing signature or challenge"), 400
 
     # Must match the session challenge injected into the Legacy tab
-    sess = session.get('challenge')
+    sess = session.get("challenge")
     if not sess or sess != challenge:
         return jsonify(error="Invalid or expired challenge"), 400
 
     if not pubkey:
-        return jsonify(error="Pubkey required"), 400   # (can add recovery later if you want it optional)
+        return jsonify(error="Pubkey required"), 400  # (can add recovery later if you want it optional)
 
     # Verify like your API: derive legacy address from pubkey and ask Bitcoin Core to verify
     try:
-        rpc  = get_rpc_connection()
+        rpc = get_rpc_connection()
         addr = derive_legacy_address_from_pubkey(pubkey)
-        ok   = rpc.verifymessage(addr, signature, challenge)
+        ok = rpc.verifymessage(addr, signature, challenge)
         if not ok:
             return jsonify(error="Invalid signature"), 403
     except Exception as e:
@@ -5662,10 +5681,10 @@ def verify_signature_legacy():
     # Access level (same rule you use in /api/verify)
     try:
         in_total, out_total = get_save_and_check_balances_for_pubkey(pubkey)
-        ratio  = (out_total / in_total) if in_total > 0 else 0
-        access = 'full' if ratio >= 1 else 'limited'
+        ratio = (out_total / in_total) if in_total > 0 else 0
+        access = "full" if ratio >= 1 else "limited"
     except Exception:
-        access = 'limited'
+        access = "limited"
 
     # Set session / cookies exactly like API
     payload = {
@@ -5678,14 +5697,10 @@ def verify_signature_legacy():
     return resp
 
 
-
-
-
-
-def _finish_login(resp, pubkey: str, level: str = 'limited'):
+def _finish_login(resp, pubkey: str, level: str = "limited"):
     """Sets session, and (best-effort) sets OAuth cookies for convenience."""
-    session['logged_in_pubkey'] = pubkey
-    session['access_level'] = level
+    session["logged_in_pubkey"] = pubkey
+    session["access_level"] = level
     # Best-effort: mint and set cookies if JWT machinery is present
     try:
         at = mint_access_token(sub=pubkey)
@@ -5697,10 +5712,8 @@ def _finish_login(resp, pubkey: str, level: str = 'limited'):
         pass
     return resp
 
+
 import io
-
-
-
 
 
 def load_guest_pins():
@@ -5712,57 +5725,75 @@ def load_guest_pins():
             mapping[pin.strip()] = label.strip()
     return mapping
 
+
 GUEST_PINS = load_guest_pins()
 
 
-HEX32_RE = re.compile(r'^[0-9A-Fa-f]{64}$')
-PUB_HEX_RE = re.compile(r'^[0-9A-Fa-f]{66,130}$')  # compressed/uncompressed/x-only-ish
+HEX32_RE = re.compile(r"^[0-9A-Fa-f]{64}$")
+PUB_HEX_RE = re.compile(r"^[0-9A-Fa-f]{66,130}$")  # compressed/uncompressed/x-only-ish
 
 
-
-
-
-
+import hashlib
+import secrets
 
 # =========================
 # LNURL-Auth (drop-in block)
 # =========================
-import time, uuid, secrets, hashlib
-from flask import request, jsonify, session, url_for
+import time
+import uuid
+
+from flask import jsonify, request, session, url_for
 
 LNURL_TTL = 300  # seconds (5 min)
 ACTIVE_LNURL_SESSIONS = {}  # sid → {k1, created, authenticated, pubkey, sig, consumed}
 
+
 def _now() -> float:
     return time.time()
+
 
 def _new_k1_hex() -> str:
     return secrets.token_hex(32)  # 32 random bytes, hex-encoded
 
+
 def _purge_expired_lnurl():
     now = _now()
     expired = [
-        sid for sid, rec in ACTIVE_LNURL_SESSIONS.items()
+        sid
+        for sid, rec in ACTIVE_LNURL_SESSIONS.items()
         if (now - rec.get("created", 0)) > LNURL_TTL and not rec.get("authenticated")
     ]
     for sid in expired:
         ACTIVE_LNURL_SESSIONS.pop(sid, None)
 
+
 # ----------------- helpers for sig verify -----------------
-def _strip_leading_zeros(x: bytes) -> bytes: return x.lstrip(b"\x00") or b"\x00"
-def _ensure_positive_int(x: bytes) -> bytes: return (b"\x00" + x) if x[0] & 0x80 else x
+def _strip_leading_zeros(x: bytes) -> bytes:
+    return x.lstrip(b"\x00") or b"\x00"
+
+
+def _ensure_positive_int(x: bytes) -> bytes:
+    return (b"\x00" + x) if x[0] & 0x80 else x
+
+
 def _encode_der_integer(x: bytes) -> bytes:
-    x = _strip_leading_zeros(x); x = _ensure_positive_int(x)
+    x = _strip_leading_zeros(x)
+    x = _ensure_positive_int(x)
     return b"\x02" + bytes([len(x)]) + x
+
+
 def _rs_to_der(r: bytes, s: bytes) -> bytes:
-    R = _encode_der_integer(r); S = _encode_der_integer(s)
+    R = _encode_der_integer(r)
+    S = _encode_der_integer(s)
     seq = R + S
     return b"\x30" + bytes([len(seq)]) + seq
 
+
 def _verify_lnurl_sig(k1_hex: str, sig_hex: str, key_hex: str) -> bool:
     """Verify LNURL-Auth signature (Alby, Blixt, Mutiny compatible)."""
-    from coincurve import PublicKey
     import hashlib
+
+    from coincurve import PublicKey
 
     try:
         # Wallets sign SHA256(k1), so we must verify the hash digest
@@ -5780,61 +5811,80 @@ def _verify_lnurl_sig(k1_hex: str, sig_hex: str, key_hex: str) -> bool:
         return False
 
 
-
-
 # ----------------- bech32 encoder -----------------
 def _bech32_polymod(values):
-    GEN = (0x3b6a57b2,0x26508e6d,0x1ea119fa,0x3d4233dd,0x2a1462b3)
-    chk=1
+    GEN = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
+    chk = 1
     for v in values:
-        b=chk>>25; chk=((chk&0x1ffffff)<<5)^v
-        for i in range(5): chk^=GEN[i] if ((b>>i)&1) else 0
+        b = chk >> 25
+        chk = ((chk & 0x1FFFFFF) << 5) ^ v
+        for i in range(5):
+            chk ^= GEN[i] if ((b >> i) & 1) else 0
     return chk
 
-def _bech32_hrp_expand(hrp): return [ord(x)>>5 for x in hrp]+[0]+[ord(x)&31 for x in hrp]
-def _bech32_create_checksum(hrp,data):
-    v=_bech32_hrp_expand(hrp)+data
-    p=_bech32_polymod(v+[0,0,0,0,0,0])^1
-    return [(p>>5*(5-i))&31 for i in range(6)]
-def _bech32_encode(hrp,data):
-    C="qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-    return hrp+"1"+"".join([C[d] for d in data+_bech32_create_checksum(hrp,data)])
-def _convertbits(data,frombits,tobits,pad=True):
-    acc=0; bits=0; ret=[]; maxv=(1<<tobits)-1; max_acc=(1<<(frombits+tobits-1))-1
+
+def _bech32_hrp_expand(hrp):
+    return [ord(x) >> 5 for x in hrp] + [0] + [ord(x) & 31 for x in hrp]
+
+
+def _bech32_create_checksum(hrp, data):
+    v = _bech32_hrp_expand(hrp) + data
+    p = _bech32_polymod(v + [0, 0, 0, 0, 0, 0]) ^ 1
+    return [(p >> 5 * (5 - i)) & 31 for i in range(6)]
+
+
+def _bech32_encode(hrp, data):
+    C = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+    return hrp + "1" + "".join([C[d] for d in data + _bech32_create_checksum(hrp, data)])
+
+
+def _convertbits(data, frombits, tobits, pad=True):
+    acc = 0
+    bits = 0
+    ret = []
+    maxv = (1 << tobits) - 1
+    max_acc = (1 << (frombits + tobits - 1)) - 1
     for v in data:
-        if v<0 or (v>>frombits): return None
-        acc=((acc<<frombits)|v)&max_acc; bits+=frombits
-        while bits>=tobits: bits-=tobits; ret.append((acc>>bits)&maxv)
-    if pad and bits: ret.append((acc<<(tobits-bits))&maxv)
-    elif not pad and (bits>=frombits or ((acc<<(tobits-bits))&maxv)): return None
+        if v < 0 or (v >> frombits):
+            return None
+        acc = ((acc << frombits) | v) & max_acc
+        bits += frombits
+        while bits >= tobits:
+            bits -= tobits
+            ret.append((acc >> bits) & maxv)
+    if pad and bits:
+        ret.append((acc << (tobits - bits)) & maxv)
+    elif not pad and (bits >= frombits or ((acc << (tobits - bits)) & maxv)):
+        return None
     return ret
-def _lnurl_bech32(url_str:str)->str:
-    return _bech32_encode("lnurl", _convertbits(url_str.encode("utf-8"),8,5))
 
 
+def _lnurl_bech32(url_str: str) -> str:
+    return _bech32_encode("lnurl", _convertbits(url_str.encode("utf-8"), 8, 5))
 
 
-
-
-@app.route('/', methods=['GET'])
+@app.route("/", methods=["GET"])
 def root_redirect():
-    return redirect(url_for('landing_page'), code=301)
+    return redirect(url_for("landing_page"), code=301)
+
+
+import hashlib
+import json
 
 # =========================
 # COMPLETE OIDC/OAuth2 SYSTEM (append at EOF after your existing code)
 # =========================
 import os
+import secrets
 import time
 import uuid
-import secrets
-import hashlib
-import json
-from enum import Enum
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Optional, List, Set, Dict
-from flask import Flask, request, jsonify, render_template_string, redirect, url_for
+from enum import Enum
+from typing import Dict, List, Optional, Set
+
 import jwt
+from flask import Flask, jsonify, redirect, render_template_string, request, url_for
 
 # ----------------------------------------------------------------------------
 # CONFIGURATION & GLOBALS
@@ -5856,10 +5906,12 @@ LNURL_TTL = 300  # seconds
 # DATA MODELS
 # ----------------------------------------------------------------------------
 
+
 class ClientType(Enum):
     FREE = "free"
     PAID = "paid"
     PREMIUM = "premium"
+
 
 @dataclass
 class ClientCredentials:
@@ -5877,11 +5929,12 @@ class ClientCredentials:
 # CLIENT MANAGER
 # ----------------------------------------------------------------------------
 
+
 class ClientManager:
     @staticmethod
-    def register_client(payment_proof: Optional[str] = None,
-                        redirect_uris: Optional[List[str]] = None
-                        ) -> ClientCredentials:
+    def register_client(
+        payment_proof: Optional[str] = None, redirect_uris: Optional[List[str]] = None
+    ) -> ClientCredentials:
         client_id = f"anon_{secrets.token_hex(16)}"
         client_secret = secrets.token_hex(32)
 
@@ -5917,15 +5970,16 @@ class ClientManager:
             client_type=ctype,
             rate_limit=rate_limit,
             allowed_scopes=scopes,
-            redirect_uris=redirect_uris or []
+            redirect_uris=redirect_uris or [],
         )
 
         # Store in Redis (with fallback to in-memory)
         try:
             storage = get_storage()
             # Import storage's ClientCredentials
-            from storage import ClientCredentials as RedisClient, ClientType as RedisClientType
-            
+            from storage import ClientCredentials as RedisClient
+            from storage import ClientType as RedisClientType
+
             # Convert to Redis format
             redis_client = RedisClient(
                 client_id=client.client_id,
@@ -5935,7 +5989,7 @@ class ClientManager:
                 allowed_scopes=client.allowed_scopes,
                 redirect_uris=client.redirect_uris,
                 created_at=client.created_at.timestamp(),
-                is_active=True
+                is_active=True,
             )
             storage.store_client(redis_client)
             logger.info(f"✅ Stored client in Redis: {client_id}")
@@ -5949,7 +6003,7 @@ class ClientManager:
                 "allowed_scopes": list(client.allowed_scopes),
                 "redirect_uris": client.redirect_uris,
                 "payment_expiry": client.payment_expiry.isoformat() if client.payment_expiry else None,
-                "created_at": client.created_at.isoformat()
+                "created_at": client.created_at.isoformat(),
             }
 
         return client
@@ -5971,11 +6025,11 @@ class ClientManager:
                         allowed_scopes=redis_client.allowed_scopes,
                         redirect_uris=redis_client.redirect_uris,
                         payment_expiry=None,
-                        created_at=datetime.fromtimestamp(redis_client.created_at)
+                        created_at=datetime.fromtimestamp(redis_client.created_at),
                     )
         except Exception as e:
             logger.warning(f"⚠️  Redis lookup failed: {e}")
-        
+
         # Fallback to in-memory
         data = CLIENT_STORE.get(client_id)
         if not data:
@@ -5997,7 +6051,7 @@ class ClientManager:
             allowed_scopes=set(data["allowed_scopes"]),
             redirect_uris=data.get("redirect_uris") or [],
             payment_expiry=datetime.fromisoformat(data["payment_expiry"]) if data.get("payment_expiry") else None,
-            created_at=datetime.fromisoformat(data["created_at"])
+            created_at=datetime.fromisoformat(data["created_at"]),
         )
 
 
@@ -6005,16 +6059,14 @@ class ClientManager:
 # OAUTH SERVER CORE
 # ----------------------------------------------------------------------------
 
+
 class OAuthServer:
     def __init__(self, client_manager: ClientManager):
         self.client_manager = client_manager
 
-    def authorization_endpoint(self,
-                               client_id: str,
-                               scope: str,
-                               state: str,
-                               redirect_uri: str,
-                               response_type: str = "code") -> dict:
+    def authorization_endpoint(
+        self, client_id: str, scope: str, state: str, redirect_uri: str, response_type: str = "code"
+    ) -> dict:
         # 1. validate client (try Redis first)
         client_data = None
         try:
@@ -6028,15 +6080,15 @@ class OAuthServer:
                     "client_type": redis_client.client_type.value,
                     "rate_limit": redis_client.rate_limit,
                     "allowed_scopes": list(redis_client.allowed_scopes),
-                    "redirect_uris": redis_client.redirect_uris
+                    "redirect_uris": redis_client.redirect_uris,
                 }
         except Exception as e:
             logger.warning(f"⚠️  Redis lookup in authorize: {e}")
-        
+
         # Fallback to in-memory
         if not client_data:
             client_data = CLIENT_STORE.get(client_id)
-        
+
         if not client_data:
             return {"error": "invalid_client"}
 
@@ -6046,10 +6098,7 @@ class OAuthServer:
         if not requested_scopes.issubset(allowed_scopes):
             return {
                 "error": "invalid_scope",
-                "detail": {
-                    "allowed": list(allowed_scopes),
-                    "requested": list(requested_scopes)
-                }
+                "detail": {"allowed": list(allowed_scopes), "requested": list(requested_scopes)},
             }
 
         # 3. redirect URI must match registered URIs
@@ -6064,9 +6113,9 @@ class OAuthServer:
             "redirect_uri": redirect_uri,
             "state": state,
             "created_at": int(time.time()),
-            "expires_at": int(time.time()) + 600  # 10 min
+            "expires_at": int(time.time()) + 600,  # 10 min
         }
-        
+
         # Store in Redis (with fallback)
         try:
             storage = get_storage()
@@ -6081,17 +6130,16 @@ class OAuthServer:
         #   (for browser-style OAuth)
         # OR
         # - jsonify this dict (for CLI testing)
-        return {
-            "authorization_code": code,
-            "redirect_uri": f"{redirect_uri}?code={code}&state={state}"
-        }
+        return {"authorization_code": code, "redirect_uri": f"{redirect_uri}?code={code}&state={state}"}
 
-    def token_endpoint(self,
-                       grant_type: str,
-                       client_id: str,
-                       client_secret: str,
-                       code: Optional[str] = None,
-                       refresh_token: Optional[str] = None) -> dict:
+    def token_endpoint(
+        self,
+        grant_type: str,
+        client_id: str,
+        client_secret: str,
+        code: Optional[str] = None,
+        refresh_token: Optional[str] = None,
+    ) -> dict:
 
         client = self.client_manager.authenticate_client(client_id, client_secret)
         if not client:
@@ -6119,11 +6167,11 @@ class OAuthServer:
                 logger.info(f"✅ Retrieved auth code from Redis: {code[:10]}...")
         except Exception as e:
             logger.warning(f"⚠️  Redis code retrieval failed: {e}")
-        
+
         # Fallback to in-memory
         if not code_data:
             code_data = AUTH_CODE_STORE.get(code)
-        
+
         if not code_data:
             return {"error": "invalid_grant", "detail": "code_not_found"}
 
@@ -6135,7 +6183,7 @@ class OAuthServer:
 
         scope_str = code_data["scope"]
 
-        access_token  = self._gen_access(client, scope_str)
+        access_token = self._gen_access(client, scope_str)
         refresh_token = self._gen_refresh(client.client_id, scope_str)
 
         # one-time use
@@ -6147,12 +6195,12 @@ class OAuthServer:
             "token_type": "Bearer",
             "expires_in": 3600,
             "refresh_token": refresh_token,
-            "scope": scope_str
+            "scope": scope_str,
         }
 
     def _handle_refresh_grant(self, refresh_token: str, client: ClientCredentials) -> dict:
         try:
-            payload = jwt.decode(refresh_token, JWT_SECRET, algorithms=['HS256'])
+            payload = jwt.decode(refresh_token, JWT_SECRET, algorithms=["HS256"])
         except jwt.InvalidTokenError as e:
             return {"error": "invalid_grant", "detail": str(e)}
 
@@ -6164,20 +6212,15 @@ class OAuthServer:
 
         scope_str = payload.get("scope", "read_limited")
 
-        new_access  = self._gen_access(client, scope_str)
+        new_access = self._gen_access(client, scope_str)
         new_refresh = self._gen_refresh(client.client_id, scope_str)
 
-        return {
-            "access_token": new_access,
-            "token_type": "Bearer",
-            "expires_in": 3600,
-            "refresh_token": new_refresh
-        }
+        return {"access_token": new_access, "token_type": "Bearer", "expires_in": 3600, "refresh_token": new_refresh}
 
     def _gen_access(self, client: ClientCredentials, scope_str: str) -> str:
         now = int(time.time())
         payload = {
-            "iss": ISSUER,          
+            "iss": ISSUER,
             "aud": AUDIENCE,
             "client_id": client.client_id,
             "client_type": client.client_type.value,
@@ -6185,7 +6228,7 @@ class OAuthServer:
             "iat": now,
             "exp": now + 3600,
             "jti": str(uuid.uuid4()),
-            "type": "access"
+            "type": "access",
         }
         return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
@@ -6197,7 +6240,7 @@ class OAuthServer:
             "type": "refresh",
             "iat": now,
             "exp": now + 30 * 24 * 3600,
-            "jti": str(uuid.uuid4())
+            "jti": str(uuid.uuid4()),
         }
         return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
@@ -6205,6 +6248,7 @@ class OAuthServer:
 # ----------------------------------------------------------------------------
 # SCOPE CHECK DECORATOR
 # ----------------------------------------------------------------------------
+
 
 def require_scope(required_scope: str):
     def outer(fn):
@@ -6216,29 +6260,26 @@ def require_scope(required_scope: str):
             token_str = auth.split(" ", 1)[1]
 
             try:
-                payload = jwt.decode(
-                    token_str, 
-                    JWT_SECRET, 
-                    algorithms=["HS256"],
-                    audience=AUDIENCE,
-                    issuer=ISSUER
-                )
+                payload = jwt.decode(token_str, JWT_SECRET, algorithms=["HS256"], audience=AUDIENCE, issuer=ISSUER)
             except jwt.InvalidTokenError as e:
                 return jsonify({"error": "invalid_token", "detail": str(e)}), 401
 
             token_scopes = set((payload.get("scope") or "").split())
             if required_scope not in token_scopes:
-                return jsonify({
-                    "error": "insufficient_scope",
-                    "provided": list(token_scopes),
-                    "required": required_scope
-                }), 403
+                return (
+                    jsonify(
+                        {"error": "insufficient_scope", "provided": list(token_scopes), "required": required_scope}
+                    ),
+                    403,
+                )
 
             # stash claims if handler cares
             request.token_payload = payload
             return fn(*args, **kwargs)
+
         inner.__name__ = fn.__name__
         return inner
+
     return outer
 
 
@@ -6252,30 +6293,23 @@ def require_scope(required_scope: str):
 # app = Flask(__name__)
 # app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET", secrets.token_hex(16))
 
+
 @app.route("/api/demo/free", methods=["GET"])
 @require_scope("read_limited")
 def api_demo_free_v2():
-    return jsonify({
-        "status": "ok",
-        "tier": "free",
-        "msg": "limited covenant / liveness / non-sensitive view"
-    })
+    return jsonify({"status": "ok", "tier": "free", "msg": "limited covenant / liveness / non-sensitive view"})
+
 
 @app.route("/api/demo/protected", methods=["GET"])
 @require_scope("read")
 def api_demo_protected_v2():
-    return jsonify({
-        "status": "ok",
-        "tier": "paid",
-        "msg": "full covenant data / requires broader scope"
-    })
-
-
+    return jsonify({"status": "ok", "tier": "paid", "msg": "full covenant data / requires broader scope"})
 
 
 # ----------------------------------------------------------------------------
 # OPTIONAL: simple scope-check decorator for your API routes
 # ----------------------------------------------------------------------------
+
 
 def require_scope(required_scope: str):
     def outer(fn):
@@ -6288,60 +6322,56 @@ def require_scope(required_scope: str):
 
             # Verify token
             try:
-                payload = jwt.decode(
-                    token_str, 
-                    JWT_SECRET, 
-                    algorithms=['HS256'],
-                    audience=AUDIENCE,
-                    issuer=ISSUER
-                )
+                payload = jwt.decode(token_str, JWT_SECRET, algorithms=["HS256"], audience=AUDIENCE, issuer=ISSUER)
             except jwt.InvalidTokenError as e:
                 return jsonify({"error": "invalid_token", "detail": str(e)}), 401
 
             # Check scope
             token_scopes = set((payload.get("scope") or "").split())
             if required_scope not in token_scopes:
-                return jsonify({
-                    "error": "insufficient_scope",
-                    "provided": list(token_scopes),
-                    "required": required_scope
-                }), 403
+                return (
+                    jsonify(
+                        {"error": "insufficient_scope", "provided": list(token_scopes), "required": required_scope}
+                    ),
+                    403,
+                )
 
             # Optionally stash payload on request so handlers can use it
             request.token_payload = payload
             return fn(*args, **kwargs)
+
         inner.__name__ = fn.__name__
         return inner
+
     return outer
-
-
-
 
 
 # ============================================================================
 # LNURL-AUTH HELPERS
 # ============================================================================
 
+
 def _lnurl_bech32(url_str: str) -> str:
     """Encode URL as LNURL (bech32)"""
+
     def polymod(values):
-        GEN = (0x3b6a57b2,0x26508e6d,0x1ea119fa,0x3d4233dd,0x2a1462b3)
+        GEN = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
         chk = 1
         for v in values:
             b = chk >> 25
-            chk = ((chk & 0x1ffffff) << 5) ^ v
+            chk = ((chk & 0x1FFFFFF) << 5) ^ v
             for i in range(5):
                 chk ^= GEN[i] if ((b >> i) & 1) else 0
         return chk
-    
+
     def hrp_expand(hrp):
         return [ord(x) >> 5 for x in hrp] + [0] + [ord(x) & 31 for x in hrp]
-    
+
     def create_checksum(hrp, data):
-        values = hrp_expand(hrp) + data + [0,0,0,0,0,0]
+        values = hrp_expand(hrp) + data + [0, 0, 0, 0, 0, 0]
         mod = polymod(values) ^ 1
-        return [(mod >> 5*(5-i)) & 31 for i in range(6)]
-    
+        return [(mod >> 5 * (5 - i)) & 31 for i in range(6)]
+
     def convertbits(data, frombits, tobits):
         acc = 0
         bits = 0
@@ -6356,11 +6386,12 @@ def _lnurl_bech32(url_str: str) -> str:
         if bits:
             ret.append((acc << (tobits - bits)) & maxv)
         return ret
-    
+
     CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-    data = convertbits(url_str.encode('utf-8'), 8, 5)
+    data = convertbits(url_str.encode("utf-8"), 8, 5)
     combined = data + create_checksum("lnurl", data)
     return "lnurl1" + "".join([CHARSET[d] for d in combined])
+
 
 # ============================================================================
 # INITIALIZE
@@ -6375,10 +6406,13 @@ try:
     app  # reuse if an app already exists (when appending to an existing project)
 except NameError:
     from flask import Flask
+
     app = Flask(__name__)
     # Optional: set a secret key and a sensible issuer for local dev
-    import os, secrets
-    app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET', secrets.token_hex(16))
+    import os
+    import secrets
+
+    app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET", secrets.token_hex(16))
     # If you’ll access via http://127.0.0.1:5000, no SERVER_NAME needed.
     # If you access via a custom host:port, you can set SERVER_NAME here.
 
@@ -6603,10 +6637,10 @@ LANDING_PAGE_HTML = """<!DOCTYPE html>
         }
 
         @keyframes pulse-glow {
-            0%, 100% { 
+            0%, 100% {
                 box-shadow: 0 0 10px #003a2b, 0 0 20px var(--glow-green);
             }
-            50% { 
+            50% {
                 box-shadow: 0 0 18px #00664c, 0 0 30px rgba(0, 255, 136, 0.3);
             }
         }
@@ -7623,7 +7657,7 @@ LANDING_PAGE_HTML = """<!DOCTYPE html>
                     <h1>The Universal Bitcoin Identity Layer</h1>
                     <p class="subtitle">From A to Z: White Glove Solutions for the Web3 Future</p>
                     <p class="description">
-                        Bridge your Web2 business into the Bitcoin economy with enterprise-grade authentication, 
+                        Bridge your Web2 business into the Bitcoin economy with enterprise-grade authentication,
                         proof-of-funds, and identity services. No custody. No compromise. Just cryptographic truth.
                     </p>
                     <div class="hero-buttons">
@@ -8329,22 +8363,22 @@ export default NextAuth({
             document.querySelectorAll('.use-case-content').forEach(content => {
                 content.classList.remove('active');
             });
-            
+
             // Remove active from all buttons
             document.querySelectorAll('.tab-button').forEach(button => {
                 button.classList.remove('active');
             });
-            
+
             // Show selected content
             const targetContent = document.getElementById(tabName);
             if (targetContent) {
                 targetContent.classList.add('active');
             }
-            
+
             // Add active to clicked button - find button by matching text or data attribute
             document.querySelectorAll('.tab-button').forEach(button => {
                 const buttonText = button.textContent.toLowerCase();
-                if (buttonText.includes(tabName.toLowerCase()) || 
+                if (buttonText.includes(tabName.toLowerCase()) ||
                     button.getAttribute('data-tab') === tabName) {
                     button.classList.add('active');
                 }
@@ -8516,7 +8550,7 @@ export default NextAuth({
         function copyCode(elementId) {
             const codeElement = document.getElementById(elementId);
             if (!codeElement) return;
-            
+
             const text = codeElement.textContent;
             navigator.clipboard.writeText(text).then(() => {
                 // Visual feedback
@@ -8535,10 +8569,10 @@ export default NextAuth({
         async function testEndpoint(type) {
             const statusElement = document.getElementById(`${type}-status`);
             const resultElement = document.getElementById(`${type}-result`);
-            
+
             statusElement.textContent = 'Testing...';
             resultElement.textContent = '';
-            
+
             try {
                 let url;
                 if (type === 'discovery') {
@@ -8546,10 +8580,10 @@ export default NextAuth({
                 } else if (type === 'status') {
                     url = 'https://hodlxxi.com/oauthx/status';
                 }
-                
+
                 const response = await fetch(url);
                 const data = await response.json();
-                
+
                 statusElement.textContent = `✓ ${response.status} ${response.statusText}`;
                 resultElement.textContent = JSON.stringify(data, null, 2);
                 resultElement.style.display = 'block';
@@ -8569,27 +8603,27 @@ export default NextAuth({
 # ROUTES: LANDING PAGE
 # ============================================================================
 
-@app.route('/')
-@app.route('/oidc')
+
+@app.route("/")
+@app.route("/oidc")
 def landing_page():
     """Serve the KeyAuth BTC OIDC landing page"""
     # Get the issuer URL dynamically
-    base = request.url_root.rstrip('/')
+    base = request.url_root.rstrip("/")
     # Render the template with the issuer variable
     return render_template_string(LANDING_PAGE_HTML, issuer=base)
-
-
-
 
 
 # ============================================================================
 # ROUTES: ADDITIONAL PAGES
 # ============================================================================
 
-@app.route('/dashboard')
+
+@app.route("/dashboard")
 def dashboard():
     """OAuth client dashboard"""
-    return render_template_string("""
+    return render_template_string(
+        """
 <!doctype html>
 <html lang="en">
 <head>
@@ -8608,14 +8642,14 @@ def dashboard():
   <div class="container">
     <h1>🔐 API Dashboard</h1>
     <p>Manage your OAuth clients and API keys</p>
-    
+
     <h2>Register New Client</h2>
     <button class="btn" onclick="register()">Register Client</button>
     <pre id="result"></pre>
-    
+
     <p><a href="/">← Back to Home</a></p>
   </div>
-  
+
   <script>
     async function register() {
       try {
@@ -8633,13 +8667,16 @@ def dashboard():
   </script>
 </body>
 </html>
-    """)
+    """
+    )
 
-@app.route('/playground')
+
+@app.route("/playground")
 def playground():
     """Interactive OAuth playground"""
-    base = request.url_root.rstrip('/')
-    return render_template_string("""
+    base = request.url_root.rstrip("/")
+    return render_template_string(
+        """
 <!doctype html>
 <html lang="en">
 <head>
@@ -8659,11 +8696,11 @@ def playground():
 <body>
   <div class="container">
     <h1>🧪 OAuth Playground</h1>
-    
+
     <h2>Test OIDC Discovery</h2>
     <button class="btn" onclick="discover()">Fetch Discovery</button>
     <pre id="discovery"></pre>
-    
+
     <h2>Start OAuth Flow</h2>
     <form id="form">
       <input name="client_id" placeholder="Client ID" required>
@@ -8675,10 +8712,10 @@ def playground():
       </select>
       <button class="btn" type="submit">Authorize</button>
     </form>
-    
+
     <p><a href="/">← Back to Home</a></p>
   </div>
-  
+
   <script>
     document.getElementById('form').onsubmit = (e) => {
       e.preventDefault();
@@ -8692,7 +8729,7 @@ def playground():
       });
       window.location.href = '/oauth/authorize?' + params;
     };
-    
+
     async function discover() {
       const res = await fetch('/.well-known/openid-configuration');
       const data = await res.json();
@@ -8701,59 +8738,72 @@ def playground():
   </script>
 </body>
 </html>
-    """, issuer=base)
+    """,
+        issuer=base,
+    )
 
 
 # ============================================================================
 # ROUTES: OIDC DISCOVERY
 # ============================================================================
 
-@app.route('/.well-known/openid-configuration')
-def oidc_discovery():
-    base = request.url_root.rstrip('/')
-    return jsonify({
-        "issuer": base,
-        "authorization_endpoint": f"{base}/oauth/authorize",
-        "token_endpoint": f"{base}/oauth/token",
-        "jwks_uri": f"{base}/oauth/jwks.json",
-        "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code", "refresh_token"],
-        "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
-        "scopes_supported": ["read", "write", "covenant_read", "covenant_create", "read_limited"],
-        "code_challenge_methods_supported": ["S256"]
-    })
 
-@app.route('/oauth/jwks.json')
+@app.route("/.well-known/openid-configuration")
+def oidc_discovery():
+    base = request.url_root.rstrip("/")
+    return jsonify(
+        {
+            "issuer": base,
+            "authorization_endpoint": f"{base}/oauth/authorize",
+            "token_endpoint": f"{base}/oauth/token",
+            "jwks_uri": f"{base}/oauth/jwks.json",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
+            "scopes_supported": ["read", "write", "covenant_read", "covenant_create", "read_limited"],
+            "code_challenge_methods_supported": ["S256"],
+        }
+    )
+
+
+@app.route("/oauth/jwks.json")
 def oauth_jwks():
     """JWKS endpoint (empty for HS256)"""
     return jsonify({"keys": []})
+
 
 # ============================================================================
 # ROUTES: OAUTH CORE
 # ============================================================================
 
+
 @app.route("/oauth/register", methods=["POST"])
 def oauth_register():
     """Register a new OAuth client"""
     body = request.get_json(silent=True) or {}
-    
+
     try:
         client = client_manager.register_client(
-            payment_proof=body.get("payment_proof"),
-            redirect_uris=body.get("redirect_uris") or []
+            payment_proof=body.get("payment_proof"), redirect_uris=body.get("redirect_uris") or []
         )
-        
-        return jsonify({
-            "client_id": client.client_id,
-            "client_secret": client.client_secret,
-            "client_type": client.client_type.value,
-            "rate_limit": client.rate_limit,
-            "allowed_scopes": list(client.allowed_scopes),
-            "redirect_uris": client.redirect_uris
-        }), 201
-    
+
+        return (
+            jsonify(
+                {
+                    "client_id": client.client_id,
+                    "client_secret": client.client_secret,
+                    "client_type": client.client_type.value,
+                    "rate_limit": client.rate_limit,
+                    "allowed_scopes": list(client.allowed_scopes),
+                    "redirect_uris": client.redirect_uris,
+                }
+            ),
+            201,
+        )
+
     except Exception as e:
         return jsonify({"error": "registration_failed", "detail": str(e)}), 400
+
 
 @app.route("/oauth/authorize", methods=["GET"])
 def oauth_authorize():
@@ -8763,14 +8813,15 @@ def oauth_authorize():
         scope=request.args.get("scope", "read_limited"),
         state=request.args.get("state", ""),
         redirect_uri=request.args.get("redirect_uri", ""),
-        response_type=request.args.get("response_type", "code")
+        response_type=request.args.get("response_type", "code"),
     )
-    
+
     if "error" in result:
         return jsonify(result), 400
-    
+
     # Redirect to client's redirect_uri with code
     return redirect(result["redirect_uri"])
+
 
 @app.route("/oauth/token", methods=["POST"])
 def oauth_token():
@@ -8780,139 +8831,130 @@ def oauth_token():
         data = request.get_json()
     else:
         data = request.form.to_dict()
-    
+
     result = oauth_server.token_endpoint(
         grant_type=data.get("grant_type"),
         client_id=data.get("client_id"),
         client_secret=data.get("client_secret"),
         code=data.get("code"),
-        refresh_token=data.get("refresh_token")
+        refresh_token=data.get("refresh_token"),
     )
-    
+
     if "error" in result:
         return jsonify(result), 400
-    
+
     return jsonify(result), 200
+
 
 # ============================================================================
 # ROUTES: LNURL-AUTH
 # ============================================================================
+
 
 @app.route("/api/lnurl-auth/create", methods=["POST"])
 def lnurl_create():
     """Create LNURL-Auth session"""
     sid = str(uuid.uuid4())
     k1 = secrets.token_hex(32)
-    
-    LNURL_SESSION_STORE[sid] = {
-        "k1": k1,
-        "created": time.time(),
-        "authenticated": False,
-        "pubkey": None
-    }
-    
+
+    LNURL_SESSION_STORE[sid] = {"k1": k1, "created": time.time(), "authenticated": False, "pubkey": None}
+
     params_url = url_for("lnurl_params", _external=True) + f"?sid={sid}"
     lnurl_str = _lnurl_bech32(params_url)
-    
-    return jsonify({
-        "session_id": sid,
-        "callback_url": params_url,
-        "expires_in": LNURL_TTL,
-        "lnurl": lnurl_str
-    })
+
+    return jsonify({"session_id": sid, "callback_url": params_url, "expires_in": LNURL_TTL, "lnurl": lnurl_str})
+
 
 @app.route("/api/lnurl-auth/params", methods=["GET"])
 def lnurl_params():
     """LNURL-Auth params (LUD-04)"""
     sid = request.args.get("sid", "").strip()
     rec = LNURL_SESSION_STORE.get(sid)
-    
+
     if not rec:
         return jsonify({"status": "ERROR", "reason": "unknown session"}), 404
-    
+
     if time.time() - rec["created"] > LNURL_TTL:
         return jsonify({"status": "ERROR", "reason": "expired"}), 410
-    
+
     callback_url = url_for("lnurl_callback", session_id=sid, _external=True)
-    
-    return jsonify({
-        "tag": "login",
-        "k1": rec["k1"],
-        "callback": callback_url
-    })
+
+    return jsonify({"tag": "login", "k1": rec["k1"], "callback": callback_url})
+
 
 @app.route("/api/lnurl-auth/callback/<session_id>", methods=["GET"])
 def lnurl_callback(session_id):
     """LNURL-Auth callback"""
     rec = LNURL_SESSION_STORE.get(session_id)
-    
+
     if not rec:
         return jsonify({"status": "ERROR", "reason": "unknown session"}), 404
-    
+
     k1 = request.args.get("k1", "").strip()
     sig = request.args.get("sig", "").strip()
     key = request.args.get("key", "").strip()
-    
+
     if not (k1 and sig and key):
         return jsonify({"status": "ERROR", "reason": "missing parameters"}), 400
-    
+
     if k1 != rec["k1"]:
         return jsonify({"status": "ERROR", "reason": "k1 mismatch"}), 400
-    
+
     # Verify signature (simplified - add proper verification)
     try:
         from coincurve import PublicKey
+
         msg = hashlib.sha256(bytes.fromhex(k1)).digest()
         sig_bytes = bytes.fromhex(sig)
         pub_bytes = bytes.fromhex(key)
-        
+
         pk = PublicKey(pub_bytes)
         verified = pk.verify(sig_bytes, msg, hasher=None)
-        
+
         if not verified:
             return jsonify({"status": "ERROR", "reason": "invalid signature"}), 400
     except Exception as e:
         return jsonify({"status": "ERROR", "reason": f"verification failed: {e}"}), 400
-    
+
     # Mark as authenticated
     rec["authenticated"] = True
     rec["pubkey"] = key
     rec["ts"] = time.time()
-    
+
     return jsonify({"status": "OK"}), 200
+
 
 @app.route("/api/lnurl-auth/check/<session_id>", methods=["GET"])
 def lnurl_check(session_id):
     """Check LNURL-Auth status"""
     rec = LNURL_SESSION_STORE.get(session_id)
-    
+
     if not rec:
         return jsonify({"authenticated": False, "error": "unknown session"}), 404
-    
-    return jsonify({
-        "authenticated": rec.get("authenticated", False),
-        "pubkey": rec.get("pubkey")
-    })
+
+    return jsonify({"authenticated": rec.get("authenticated", False), "pubkey": rec.get("pubkey")})
+
 
 # ============================================================================
 # ROUTES: PROTECTED DEMO API
 # ============================================================================
 
+
 def require_oauth_token(required_scope: str):
     def decorator(f):
         def wrapper(*args, **kwargs):
-            auth_header = request.headers.get('Authorization', '')
-            if not auth_header.startswith('Bearer '):
+            auth_header = request.headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer "):
                 return jsonify({"error": "unauthorized", "detail": "Missing Bearer token"}), 401
 
-            token_str = auth_header.split(' ', 1)[1]
+            token_str = auth_header.split(" ", 1)[1]
 
             try:
                 payload = jwt.decode(
                     token_str,
                     JWT_SECRET,
-                    algorithms=['HS256'],
-                    audience=AUDIENCE  # <-- use AUDIENCE, not OAUTH_AUDIENCE
+                    algorithms=["HS256"],
+                    audience=AUDIENCE,  # <-- use AUDIENCE, not OAUTH_AUDIENCE
                 )
             except jwt.ExpiredSignatureError:
                 return jsonify({"error": "token_expired"}), 401
@@ -8925,184 +8967,186 @@ def require_oauth_token(required_scope: str):
 
             token_scopes = set(payload.get("scope", "").split())
             if required_scope not in token_scopes:
-                return jsonify({
-                    "error": "insufficient_scope",
-                    "required": required_scope,
-                    "provided": list(token_scopes)
-                }), 403
+                return (
+                    jsonify(
+                        {"error": "insufficient_scope", "required": required_scope, "provided": list(token_scopes)}
+                    ),
+                    403,
+                )
 
             request.oauth_payload = payload
             request.oauth_client_id = payload.get("client_id")
             request.oauth_scope = payload.get("scope")
 
             return f(*args, **kwargs)
+
         wrapper.__name__ = f.__name__
         return wrapper
+
     return decorator
-
-
-
-
-
 
 
 # ============================================================================
 # ROUTES: STATUS & HEALTH
 # ============================================================================
 
+
 @app.route("/oauthx/status")
 def oauthx_status():
     """Status endpoint"""
-    return jsonify({
-        "ok": True,
-        "service": "HODLXXI OAuth2/OIDC",
-        "timestamp": int(time.time()),
-        "registered_clients": len(CLIENT_STORE),
-        "active_codes": len(AUTH_CODE_STORE),
-        "lnurl_sessions": len(LNURL_SESSION_STORE),
-        "issuer": ISSUER,
-        "endpoints": {
-            "discovery": "/.well-known/openid-configuration",
-            "authorize": "/oauth/authorize",
-            "token": "/oauth/token",
-            "register": "/oauth/register",
-            "jwks": "/oauth/jwks.json"
+    return jsonify(
+        {
+            "ok": True,
+            "service": "HODLXXI OAuth2/OIDC",
+            "timestamp": int(time.time()),
+            "registered_clients": len(CLIENT_STORE),
+            "active_codes": len(AUTH_CODE_STORE),
+            "lnurl_sessions": len(LNURL_SESSION_STORE),
+            "issuer": ISSUER,
+            "endpoints": {
+                "discovery": "/.well-known/openid-configuration",
+                "authorize": "/oauth/authorize",
+                "token": "/oauth/token",
+                "register": "/oauth/register",
+                "jwks": "/oauth/jwks.json",
+            },
         }
-    })
+    )
+
 
 @app.route("/oauthx/docs")
 def oauthx_docs():
     """API documentation"""
-    return jsonify({
-        "version": "1.0",
-        "authentication": {
-            "type": "OAuth 2.0 + OIDC",
-            "flows": {
-                "authorization_code": {
-                    "authorization_url": f"{ISSUER}/oauth/authorize",
-                    "token_url": f"{ISSUER}/oauth/token",
-                    "scopes": {
-                        "read": "Read-only access",
-                        "write": "Write access",
-                        "covenant_read": "Read covenants",
-                        "covenant_create": "Create covenants",
-                        "read_limited": "Limited read access (free tier)"
-                    }
+    return jsonify(
+        {
+            "version": "1.0",
+            "authentication": {
+                "type": "OAuth 2.0 + OIDC",
+                "flows": {
+                    "authorization_code": {
+                        "authorization_url": f"{ISSUER}/oauth/authorize",
+                        "token_url": f"{ISSUER}/oauth/token",
+                        "scopes": {
+                            "read": "Read-only access",
+                            "write": "Write access",
+                            "covenant_read": "Read covenants",
+                            "covenant_create": "Create covenants",
+                            "read_limited": "Limited read access (free tier)",
+                        },
+                    },
+                    "refresh_token": {"token_url": f"{ISSUER}/oauth/token"},
                 },
-                "refresh_token": {
-                    "token_url": f"{ISSUER}/oauth/token"
-                }
-            }
-        },
-        "endpoints": {
-            "POST /oauth/register": {
-                "description": "Register new OAuth client",
-                "body": {
-                    "payment_proof": "optional",
-                    "redirect_uris": ["array of URIs"]
+            },
+            "endpoints": {
+                "POST /oauth/register": {
+                    "description": "Register new OAuth client",
+                    "body": {"payment_proof": "optional", "redirect_uris": ["array of URIs"]},
+                    "response": {
+                        "client_id": "string",
+                        "client_secret": "string",
+                        "client_type": "free|paid|premium",
+                        "rate_limit": "number",
+                        "allowed_scopes": ["array"],
+                    },
                 },
-                "response": {
-                    "client_id": "string",
-                    "client_secret": "string",
-                    "client_type": "free|paid|premium",
-                    "rate_limit": "number",
-                    "allowed_scopes": ["array"]
-                }
-            },
-            "GET /oauth/authorize": {
-                "description": "Authorization endpoint",
-                "params": {
-                    "client_id": "required",
-                    "scope": "required",
-                    "state": "required",
-                    "redirect_uri": "required",
-                    "response_type": "code"
-                }
-            },
-            "POST /oauth/token": {
-                "description": "Token endpoint",
-                "body": {
-                    "grant_type": "authorization_code|refresh_token",
-                    "client_id": "required",
-                    "client_secret": "required",
-                    "code": "required for authorization_code",
-                    "refresh_token": "required for refresh_token"
-                }
-            },
-            "GET /api/demo/protected": {
-                "description": "Demo protected endpoint",
-                "headers": {
-                    "Authorization": "Bearer <access_token>"
+                "GET /oauth/authorize": {
+                    "description": "Authorization endpoint",
+                    "params": {
+                        "client_id": "required",
+                        "scope": "required",
+                        "state": "required",
+                        "redirect_uri": "required",
+                        "response_type": "code",
+                    },
                 },
-                "required_scope": "read"
-            }
-        },
-        "lnurl_auth": {
-            "POST /api/lnurl-auth/create": "Create LNURL session",
-            "GET /api/lnurl-auth/params": "Get LNURL params",
-            "GET /api/lnurl-auth/callback/<session_id>": "LNURL callback",
-            "GET /api/lnurl-auth/check/<session_id>": "Check auth status"
+                "POST /oauth/token": {
+                    "description": "Token endpoint",
+                    "body": {
+                        "grant_type": "authorization_code|refresh_token",
+                        "client_id": "required",
+                        "client_secret": "required",
+                        "code": "required for authorization_code",
+                        "refresh_token": "required for refresh_token",
+                    },
+                },
+                "GET /api/demo/protected": {
+                    "description": "Demo protected endpoint",
+                    "headers": {"Authorization": "Bearer <access_token>"},
+                    "required_scope": "read",
+                },
+            },
+            "lnurl_auth": {
+                "POST /api/lnurl-auth/create": "Create LNURL session",
+                "GET /api/lnurl-auth/params": "Get LNURL params",
+                "GET /api/lnurl-auth/callback/<session_id>": "LNURL callback",
+                "GET /api/lnurl-auth/check/<session_id>": "Check auth status",
+            },
         }
-    })
+    )
+
 
 # ============================================================================
 # UTILITY: TOKEN INTROSPECTION (for debugging)
 # ============================================================================
+
 
 @app.route("/oauth/introspect", methods=["POST"])
 def oauth_introspect():
     """Token introspection endpoint (for debugging)"""
     data = request.get_json(silent=True) or request.form.to_dict()
     token = data.get("token")
-    
+
     if not token:
         return jsonify({"active": False}), 400
-    
+
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
-        
-        return jsonify({
-            "active": True,
-            "client_id": payload.get("client_id"),
-            "scope": payload.get("scope"),
-            "exp": payload.get("exp"),
-            "iat": payload.get("iat"),
-            "token_type": payload.get("type")
-        })
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+
+        return jsonify(
+            {
+                "active": True,
+                "client_id": payload.get("client_id"),
+                "scope": payload.get("scope"),
+                "exp": payload.get("exp"),
+                "iat": payload.get("iat"),
+                "token_type": payload.get("type"),
+            }
+        )
     except jwt.ExpiredSignatureError:
         return jsonify({"active": False, "error": "expired"})
     except jwt.InvalidTokenError:
         return jsonify({"active": False, "error": "invalid"})
 
+
 # ============================================================================
 # CLEANUP: Periodic cleanup of expired data
 # ============================================================================
 
+
 def cleanup_expired_data():
     """Remove expired auth codes and sessions"""
     import threading
-    
+
     now = int(time.time())
-    
+
     # Clean auth codes
-    expired_codes = [
-        code for code, data in AUTH_CODE_STORE.items()
-        if data.get("expires_at", 0) < now
-    ]
+    expired_codes = [code for code, data in AUTH_CODE_STORE.items() if data.get("expires_at", 0) < now]
     for code in expired_codes:
         # Delete from in-memory if it was there (Redis auto-deleted)
         AUTH_CODE_STORE.pop(code, None)
-    
+
     # Clean LNURL sessions
     expired_sessions = [
-        sid for sid, data in LNURL_SESSION_STORE.items()
+        sid
+        for sid, data in LNURL_SESSION_STORE.items()
         if (now - data.get("created", 0)) > LNURL_TTL and not data.get("authenticated")
     ]
     for sid in expired_sessions:
         del LNURL_SESSION_STORE[sid]
-    
+
     # Schedule next cleanup
     threading.Timer(60.0, cleanup_expired_data).start()
+
 
 # Start cleanup thread
 cleanup_expired_data()
@@ -9111,32 +9155,37 @@ cleanup_expired_data()
 # ADDITIONAL HELPER ROUTES
 # ============================================================================
 
+
 @app.route("/oauth/clients", methods=["GET"])
 def list_clients():
     """List all registered clients (admin only - add auth in production)"""
-    return jsonify({
-        "clients": [
-            {
-                "client_id": data["client_id"],
-                "client_type": data["client_type"],
-                "created_at": data["created_at"],
-                "scopes": data["allowed_scopes"]
-            }
-            for data in CLIENT_STORE.values()
-        ]
-    })
+    return jsonify(
+        {
+            "clients": [
+                {
+                    "client_id": data["client_id"],
+                    "client_type": data["client_type"],
+                    "created_at": data["created_at"],
+                    "scopes": data["allowed_scopes"],
+                }
+                for data in CLIENT_STORE.values()
+            ]
+        }
+    )
+
 
 @app.route("/oauth/revoke", methods=["POST"])
 def oauth_revoke():
     """Revoke a token"""
     data = request.get_json(silent=True) or {}
     token = data.get("token")
-    
+
     if not token:
         return jsonify({"error": "token required"}), 400
-    
+
     # In production, maintain a blacklist in Redis
     return jsonify({"revoked": True}), 200
+
 
 # ============================================================================
 # PRINT STARTUP INFO
@@ -9173,13 +9222,6 @@ if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True)
 
 
-
-
-
-
-
-
-
 # === HODLXXI â Proof of Funds (append-only block) ============================
 # Non-custodial PoF: challenge -> PSBT (with OP_RETURN containing challenge)
 # -> server verifies unspent inputs; stores short-lived attestation only.
@@ -9189,27 +9231,35 @@ try:
 except NameError:
     ACTIVE_CHALLENGES = {}
 
+
 def _hodlxxi_pof_bootstrap():
     # Local imports to avoid touching your top import section
-    import os, sqlite3, secrets, hashlib, time
+    import hashlib
+    import os
+    import secrets
+    import sqlite3
+    import time
     from datetime import datetime, timedelta
-    from flask import request, jsonify, session
+
+    from flask import jsonify, request, session
+
     globals_ = globals()
 
     # Must exist in your app already:
-    app       = globals_['app']
-    socketio  = globals_['socketio']
-    get_rpc_connection = globals_['get_rpc_connection']
+    app = globals_["app"]
+    socketio = globals_["socketio"]
+    get_rpc_connection = globals_["get_rpc_connection"]
 
     # Config
-    POF_DB_PATH     = os.getenv("POF_DB_PATH", "/srv/chat/pof_attest.db")
+    POF_DB_PATH = os.getenv("POF_DB_PATH", "/srv/chat/pof_attest.db")
     POF_TTL_SECONDS = int(os.getenv("POF_TTL_SECONDS", "172800"))  # 48h
-    POF_MAX_PSBT_B64= int(os.getenv("POF_MAX_PSBT_B64", "250000")) # ~250 KB
+    POF_MAX_PSBT_B64 = int(os.getenv("POF_MAX_PSBT_B64", "250000"))  # ~250 KB
 
     os.makedirs(os.path.dirname(POF_DB_PATH), exist_ok=True)
     _POF = sqlite3.connect(POF_DB_PATH, check_same_thread=False, isolation_level=None)
     _POF.execute("PRAGMA journal_mode=WAL")
-    _POF.execute("""
+    _POF.execute(
+        """
     CREATE TABLE IF NOT EXISTS pof_attestations(
       pubkey TEXT NOT NULL,
       covenant_id TEXT NOT NULL DEFAULT '',
@@ -9220,9 +9270,12 @@ def _hodlxxi_pof_bootstrap():
       expires_at INTEGER NOT NULL,
       created_at INTEGER NOT NULL,
       PRIMARY KEY(pubkey, covenant_id)
-    )""")
+    )"""
+    )
 
-    def _pof_now(): return int(time.time())
+    def _pof_now():
+        return int(time.time())
+
     def _pof_prune():
         try:
             _POF.execute("DELETE FROM pof_attestations WHERE expires_at < ?", (_pof_now(),))
@@ -9233,10 +9286,20 @@ def _hodlxxi_pof_bootstrap():
         row = _POF.execute(
             "SELECT pubkey, covenant_id, total_sat, method, privacy_level, proof_hash, expires_at, created_at "
             "FROM pof_attestations WHERE pubkey=? AND covenant_id=?",
-            (pubkey, covenant_id)
+            (pubkey, covenant_id),
         ).fetchone()
-        if not row: return None
-        keys = ["pubkey","covenant_id","total_sat","method","privacy_level","proof_hash","expires_at","created_at"]
+        if not row:
+            return None
+        keys = [
+            "pubkey",
+            "covenant_id",
+            "total_sat",
+            "method",
+            "privacy_level",
+            "proof_hash",
+            "expires_at",
+            "created_at",
+        ]
         return dict(zip(keys, row))
 
     def _extract_opret_hex(vout_obj: dict):
@@ -9247,11 +9310,11 @@ def _hodlxxi_pof_bootstrap():
             return parts[1]
         return None
 
-    def _is_member(pubkey:str, covenant_id:str|None):
+    def _is_member(pubkey: str, covenant_id: str | None):
         # Minimal guard: logged-in pubkey must match the claimant.
         # You can tighten this to "pubkey is actually in covenant_id" using your existing metadata.
         try:
-            return session.get('logged_in_pubkey') == pubkey
+            return session.get("logged_in_pubkey") == pubkey
         except Exception:
             return False
 
@@ -9267,15 +9330,17 @@ def _hodlxxi_pof_bootstrap():
         cid = secrets.token_hex(8)
         challenge = f"HODLXXI-PoF:{cid}:{_pof_now()}"
         ACTIVE_CHALLENGES[cid] = {
-            "pubkey": pubkey, "covenant_id": covenant_id,
-            "challenge": challenge, "expires": _pof_now() + 900
+            "pubkey": pubkey,
+            "covenant_id": covenant_id,
+            "challenge": challenge,
+            "expires": _pof_now() + 900,
         }
         return jsonify(ok=True, challenge_id=cid, challenge=challenge, expires_in=900)
 
     @app.post("/api/pof/verify_psbt")
     def api_pof_verify_psbt():
         data = request.get_json(silent=True) or {}
-        cid  = (data.get("challenge_id") or "").strip()
+        cid = (data.get("challenge_id") or "").strip()
         psbt = (data.get("psbt") or "").strip()
         privacy_level = (data.get("privacy_level") or "aggregate").strip().lower()
         min_sat = int(data.get("min_sat") or 0)
@@ -9292,18 +9357,20 @@ def _hodlxxi_pof_bootstrap():
 
         rpc = get_rpc_connection()
         dec = rpc.decodepsbt(psbt)
-        tx  = dec.get("tx") or {}
+        tx = dec.get("tx") or {}
         vouts = tx.get("vout") or []
-        vins  = tx.get("vin") or []
+        vins = tx.get("vin") or []
 
         # OP_RETURN must contain our challenge bytes
         bound = False
         for vout in vouts:
             ophex = _extract_opret_hex(vout)
-            if not ophex: continue
+            if not ophex:
+                continue
             try:
                 if challenge.encode() in bytes.fromhex(ophex):
-                    bound = True; break
+                    bound = True
+                    break
             except Exception:
                 pass
         if not bound:
@@ -9312,9 +9379,12 @@ def _hodlxxi_pof_bootstrap():
         # At least one referenced input must still be unspent + sum all currently unspent inputs
         total_sat = 0
         for i in vins:
-            txid = i.get("txid"); voutn = i.get("vout")
-            if not txid and txid != "": continue
-            if voutn is None: continue
+            txid = i.get("txid")
+            voutn = i.get("vout")
+            if not txid and txid != "":
+                continue
+            if voutn is None:
+                continue
             utxo = rpc.gettxout(txid, voutn)
             if utxo:
                 amt_sat = int(round(float(utxo.get("value", 0.0)) * 1e8))
@@ -9324,33 +9394,43 @@ def _hodlxxi_pof_bootstrap():
 
         # Store short-lived attestation (NOT a balance)
         proof_hash = hashlib.sha256((psbt + challenge).encode()).hexdigest()
-        now = _pof_now(); exp = now + POF_TTL_SECONDS
-        _POF.execute("""
+        now = _pof_now()
+        exp = now + POF_TTL_SECONDS
+        _POF.execute(
+            """
           INSERT INTO pof_attestations(pubkey,covenant_id,total_sat,method,privacy_level,proof_hash,expires_at,created_at)
           VALUES(?,?,?,?,?,?,?,?)
           ON CONFLICT(pubkey, covenant_id) DO UPDATE SET
             total_sat=excluded.total_sat, method=excluded.method,
             privacy_level=excluded.privacy_level, proof_hash=excluded.proof_hash,
             expires_at=excluded.expires_at, created_at=excluded.created_at
-        """, (pubkey, (cov_id or ''), total_sat, "psbt", privacy_level, proof_hash, exp, now))
+        """,
+            (pubkey, (cov_id or ""), total_sat, "psbt", privacy_level, proof_hash, exp, now),
+        )
         _pof_prune()
         ACTIVE_CHALLENGES.pop(cid, None)
 
         # Live signal (optional)
         try:
-            socketio.emit("pof:updated", {
-                "pubkey": pubkey, "covenant_id": cov_id,
-                "total_sat": total_sat, "privacy_level": privacy_level,
-                "expires_at": exp, "method": "psbt"
-            })
+            socketio.emit(
+                "pof:updated",
+                {
+                    "pubkey": pubkey,
+                    "covenant_id": cov_id,
+                    "total_sat": total_sat,
+                    "privacy_level": privacy_level,
+                    "expires_at": exp,
+                    "method": "psbt",
+                },
+            )
         except Exception:
             pass
 
         res = {"ok": True, "pubkey": pubkey, "total_sat": total_sat, "expires_in": POF_TTL_SECONDS}
         if privacy_level == "boolean":
-            res["has_threshold"] = (total_sat >= max(min_sat, 0))
+            res["has_threshold"] = total_sat >= max(min_sat, 0)
         elif privacy_level == "threshold":
-            res["meets_min_sat"] = (total_sat >= max(min_sat, 0))
+            res["meets_min_sat"] = total_sat >= max(min_sat, 0)
         return jsonify(res)
 
     @app.get("/api/pof/status/<pubkey>")
@@ -9358,6 +9438,7 @@ def _hodlxxi_pof_bootstrap():
         covenant_id = (request.args.get("covenant_id") or "").strip()
         st = _pof_get_status((pubkey or "").strip(), covenant_id)
         return jsonify(ok=True, status=st)
+
 
 _hodlxxi_pof_bootstrap()
 # === End PoF block ===========================================================

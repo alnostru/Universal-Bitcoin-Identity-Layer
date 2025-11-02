@@ -5,19 +5,20 @@ Database initialization script for HODLXXI.
 This script initializes the database and creates all tables.
 For production, use Alembic migrations instead.
 """
-import sys
 import os
+import sys
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
-from app.database import init_all, get_health_status
-from app.models import Base
 from sqlalchemy import create_engine
-from app.database import get_database_url
+
+from app.database import get_database_url, get_health_status, init_all
+from app.models import Base
 
 
 def main():
@@ -51,7 +52,7 @@ def main():
         print(f"  PostgreSQL: {health['database']['status']}")
         print(f"  Redis: {health['redis']['status']}")
 
-        if health['database']['status'] == 'healthy' and health['redis']['status'] == 'healthy':
+        if health["database"]["status"] == "healthy" and health["redis"]["status"] == "healthy":
             print("\n✅ Database initialization complete!")
             print("\n📝 Next steps:")
             print("  1. Run migrations: alembic upgrade head")
@@ -64,6 +65,7 @@ def main():
     except Exception as e:
         print(f"\n❌ Error initializing database: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 

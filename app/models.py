@@ -3,14 +3,25 @@ SQLAlchemy database models for HODLXXI.
 
 Production-grade database schema for Bitcoin identity and OAuth2 operations.
 """
+
+import uuid
 from datetime import datetime
+
 from sqlalchemy import (
-    Column, String, Text, Integer, Boolean, DateTime,
-    Float, JSON, Index, ForeignKey, UniqueConstraint
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
-import uuid
 
 Base = declarative_base()
 
@@ -24,7 +35,8 @@ class User(Base):
     """
     User model - Bitcoin pubkey-based identity.
     """
-    __tablename__ = 'users'
+
+    __tablename__ = "users"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     pubkey = Column(String(66), unique=True, nullable=False, index=True)  # Bitcoin public key
@@ -34,12 +46,12 @@ class User(Base):
     is_active = Column(Boolean, default=True)
 
     # Relationships
-    sessions = relationship('Session', back_populates='user', cascade='all, delete-orphan')
-    oauth_tokens = relationship('OAuthToken', back_populates='user', cascade='all, delete-orphan')
+    sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")
+    oauth_tokens = relationship("OAuthToken", back_populates="user", cascade="all, delete-orphan")
 
     __table_args__ = (
-        Index('idx_user_pubkey', 'pubkey'),
-        Index('idx_user_created', 'created_at'),
+        Index("idx_user_pubkey", "pubkey"),
+        Index("idx_user_created", "created_at"),
     )
 
     def __repr__(self):
@@ -50,7 +62,8 @@ class OAuthClient(Base):
     """
     OAuth2 client registration.
     """
-    __tablename__ = 'oauth_clients'
+
+    __tablename__ = "oauth_clients"
 
     client_id = Column(String(255), primary_key=True)
     client_secret = Column(String(255), nullable=False)
@@ -59,18 +72,18 @@ class OAuthClient(Base):
     grant_types = Column(JSON, nullable=False)  # List of allowed grant types
     response_types = Column(JSON, nullable=False)  # List of allowed response types
     scope = Column(Text)  # Space-separated scopes
-    token_endpoint_auth_method = Column(String(50), default='client_secret_basic')
+    token_endpoint_auth_method = Column(String(50), default="client_secret_basic")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     metadata = Column(JSON)  # Additional client metadata
     is_active = Column(Boolean, default=True)
 
     # Relationships
-    authorization_codes = relationship('OAuthCode', back_populates='client', cascade='all, delete-orphan')
-    tokens = relationship('OAuthToken', back_populates='client', cascade='all, delete-orphan')
+    authorization_codes = relationship("OAuthCode", back_populates="client", cascade="all, delete-orphan")
+    tokens = relationship("OAuthToken", back_populates="client", cascade="all, delete-orphan")
 
     __table_args__ = (
-        Index('idx_client_name', 'client_name'),
-        Index('idx_client_created', 'created_at'),
+        Index("idx_client_name", "client_name"),
+        Index("idx_client_created", "created_at"),
     )
 
     def __repr__(self):
@@ -81,11 +94,12 @@ class OAuthCode(Base):
     """
     OAuth2 authorization codes (short-lived).
     """
-    __tablename__ = 'oauth_codes'
+
+    __tablename__ = "oauth_codes"
 
     code = Column(String(255), primary_key=True)
-    client_id = Column(String(255), ForeignKey('oauth_clients.client_id'), nullable=False)
-    user_id = Column(String(36), ForeignKey('users.id'), nullable=False)
+    client_id = Column(String(255), ForeignKey("oauth_clients.client_id"), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
     redirect_uri = Column(Text, nullable=False)
     scope = Column(Text)
     code_challenge = Column(String(255))  # PKCE
@@ -95,11 +109,11 @@ class OAuthCode(Base):
     is_used = Column(Boolean, default=False)
 
     # Relationships
-    client = relationship('OAuthClient', back_populates='authorization_codes')
+    client = relationship("OAuthClient", back_populates="authorization_codes")
 
     __table_args__ = (
-        Index('idx_code_expires', 'expires_at'),
-        Index('idx_code_client', 'client_id'),
+        Index("idx_code_expires", "expires_at"),
+        Index("idx_code_client", "client_id"),
     )
 
     def __repr__(self):
@@ -110,14 +124,15 @@ class OAuthToken(Base):
     """
     OAuth2 access and refresh tokens.
     """
-    __tablename__ = 'oauth_tokens'
+
+    __tablename__ = "oauth_tokens"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     access_token = Column(String(255), unique=True, nullable=False, index=True)
     refresh_token = Column(String(255), unique=True, index=True)
-    token_type = Column(String(50), default='Bearer')
-    client_id = Column(String(255), ForeignKey('oauth_clients.client_id'), nullable=False)
-    user_id = Column(String(36), ForeignKey('users.id'), nullable=False)
+    token_type = Column(String(50), default="Bearer")
+    client_id = Column(String(255), ForeignKey("oauth_clients.client_id"), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
     scope = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     access_token_expires_at = Column(DateTime, nullable=False)
@@ -126,14 +141,14 @@ class OAuthToken(Base):
     metadata = Column(JSON)
 
     # Relationships
-    client = relationship('OAuthClient', back_populates='tokens')
-    user = relationship('User', back_populates='oauth_tokens')
+    client = relationship("OAuthClient", back_populates="tokens")
+    user = relationship("User", back_populates="oauth_tokens")
 
     __table_args__ = (
-        Index('idx_token_access', 'access_token'),
-        Index('idx_token_refresh', 'refresh_token'),
-        Index('idx_token_expires', 'access_token_expires_at'),
-        Index('idx_token_user', 'user_id'),
+        Index("idx_token_access", "access_token"),
+        Index("idx_token_refresh", "refresh_token"),
+        Index("idx_token_expires", "access_token_expires_at"),
+        Index("idx_token_user", "user_id"),
     )
 
     def __repr__(self):
@@ -144,11 +159,12 @@ class Session(Base):
     """
     User sessions for web login and LNURL-auth.
     """
-    __tablename__ = 'sessions'
+
+    __tablename__ = "sessions"
 
     session_id = Column(String(255), primary_key=True)
-    user_id = Column(String(36), ForeignKey('users.id'), nullable=False)
-    session_type = Column(String(50), default='web')  # 'web', 'lnurl-auth', 'api'
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    session_type = Column(String(50), default="web")  # 'web', 'lnurl-auth', 'api'
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     expires_at = Column(DateTime, nullable=False)
     last_activity = Column(DateTime, default=datetime.utcnow)
@@ -158,12 +174,12 @@ class Session(Base):
     is_active = Column(Boolean, default=True)
 
     # Relationships
-    user = relationship('User', back_populates='sessions')
+    user = relationship("User", back_populates="sessions")
 
     __table_args__ = (
-        Index('idx_session_user', 'user_id'),
-        Index('idx_session_expires', 'expires_at'),
-        Index('idx_session_active', 'is_active', 'expires_at'),
+        Index("idx_session_user", "user_id"),
+        Index("idx_session_expires", "expires_at"),
+        Index("idx_session_active", "is_active", "expires_at"),
     )
 
     def __repr__(self):
@@ -174,7 +190,8 @@ class LNURLChallenge(Base):
     """
     LNURL-auth challenges (LUD-04).
     """
-    __tablename__ = 'lnurl_challenges'
+
+    __tablename__ = "lnurl_challenges"
 
     session_id = Column(String(255), primary_key=True)
     k1 = Column(String(64), unique=True, nullable=False, index=True)  # Challenge hex
@@ -187,9 +204,9 @@ class LNURLChallenge(Base):
     metadata = Column(JSON)
 
     __table_args__ = (
-        Index('idx_lnurl_k1', 'k1'),
-        Index('idx_lnurl_expires', 'expires_at'),
-        Index('idx_lnurl_pubkey', 'pubkey'),
+        Index("idx_lnurl_k1", "k1"),
+        Index("idx_lnurl_expires", "expires_at"),
+        Index("idx_lnurl_pubkey", "pubkey"),
     )
 
     def __repr__(self):
@@ -200,13 +217,14 @@ class ProofOfFundsChallenge(Base):
     """
     Proof of Funds (PoF) challenges.
     """
-    __tablename__ = 'pof_challenges'
+
+    __tablename__ = "pof_challenges"
 
     challenge_id = Column(String(255), primary_key=True)
     pubkey = Column(String(66), nullable=False, index=True)
     challenge_message = Column(Text, nullable=False)
     threshold = Column(Float)  # Minimum BTC amount
-    privacy_level = Column(String(20), default='boolean')  # 'boolean', 'threshold', 'aggregate'
+    privacy_level = Column(String(20), default="boolean")  # 'boolean', 'threshold', 'aggregate'
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     expires_at = Column(DateTime, nullable=False)
     verified_at = Column(DateTime)
@@ -216,9 +234,9 @@ class ProofOfFundsChallenge(Base):
     metadata = Column(JSON)
 
     __table_args__ = (
-        Index('idx_pof_pubkey', 'pubkey'),
-        Index('idx_pof_expires', 'expires_at'),
-        Index('idx_pof_verified', 'is_verified'),
+        Index("idx_pof_pubkey", "pubkey"),
+        Index("idx_pof_expires", "expires_at"),
+        Index("idx_pof_verified", "is_verified"),
     )
 
     def __repr__(self):
@@ -229,13 +247,14 @@ class AuditLog(Base):
     """
     Security audit log entries.
     """
-    __tablename__ = 'audit_logs'
+
+    __tablename__ = "audit_logs"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     event_type = Column(String(50), nullable=False, index=True)  # 'auth', 'token', 'rpc', etc.
-    severity = Column(String(20), default='info')  # 'info', 'warning', 'error', 'critical'
-    user_id = Column(String(36), ForeignKey('users.id', ondelete='SET NULL'))
+    severity = Column(String(20), default="info")  # 'info', 'warning', 'error', 'critical'
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"))
     user_identifier = Column(String(255))  # Pubkey or client_id
     action = Column(String(100), nullable=False)
     resource = Column(String(255))
@@ -247,10 +266,10 @@ class AuditLog(Base):
     metadata = Column(JSON)
 
     __table_args__ = (
-        Index('idx_audit_timestamp', 'timestamp'),
-        Index('idx_audit_event_type', 'event_type'),
-        Index('idx_audit_user', 'user_id'),
-        Index('idx_audit_severity', 'severity', 'timestamp'),
+        Index("idx_audit_timestamp", "timestamp"),
+        Index("idx_audit_event_type", "event_type"),
+        Index("idx_audit_user", "user_id"),
+        Index("idx_audit_severity", "severity", "timestamp"),
     )
 
     def __repr__(self):
@@ -261,10 +280,11 @@ class BitcoinWallet(Base):
     """
     Bitcoin wallet descriptors (watch-only).
     """
-    __tablename__ = 'bitcoin_wallets'
+
+    __tablename__ = "bitcoin_wallets"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    user_id = Column(String(36), ForeignKey('users.id'), nullable=False)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
     wallet_name = Column(String(255))
     descriptor = Column(Text, nullable=False)  # Bitcoin descriptor
     descriptor_type = Column(String(50))  # 'wpkh', 'wsh', 'tr', etc.
@@ -278,9 +298,9 @@ class BitcoinWallet(Base):
     is_active = Column(Boolean, default=True)
 
     __table_args__ = (
-        Index('idx_wallet_user', 'user_id'),
-        Index('idx_wallet_xpub', 'xpub'),
-        UniqueConstraint('user_id', 'descriptor', name='uq_user_descriptor'),
+        Index("idx_wallet_user", "user_id"),
+        Index("idx_wallet_xpub", "xpub"),
+        UniqueConstraint("user_id", "descriptor", name="uq_user_descriptor"),
     )
 
     def __repr__(self):
@@ -291,7 +311,8 @@ class RateLimit(Base):
     """
     Rate limiting tracking.
     """
-    __tablename__ = 'rate_limits'
+
+    __tablename__ = "rate_limits"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     identifier = Column(String(255), nullable=False, index=True)  # IP, user_id, or api_key
@@ -302,8 +323,8 @@ class RateLimit(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (
-        Index('idx_ratelimit_identifier', 'identifier', 'endpoint', 'window_start'),
-        UniqueConstraint('identifier', 'endpoint', 'window_start', name='uq_ratelimit_window'),
+        Index("idx_ratelimit_identifier", "identifier", "endpoint", "window_start"),
+        UniqueConstraint("identifier", "endpoint", "window_start", name="uq_ratelimit_window"),
     )
 
     def __repr__(self):
@@ -314,13 +335,14 @@ class ChatMessage(Base):
     """
     Chat message history.
     """
-    __tablename__ = 'chat_messages'
+
+    __tablename__ = "chat_messages"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    sender_id = Column(String(36), ForeignKey('users.id'), nullable=False)
-    recipient_id = Column(String(36), ForeignKey('users.id'))  # NULL for broadcast/channel
+    sender_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    recipient_id = Column(String(36), ForeignKey("users.id"))  # NULL for broadcast/channel
     channel = Column(String(255), index=True)  # Channel or room name
-    message_type = Column(String(50), default='text')  # 'text', 'file', 'system'
+    message_type = Column(String(50), default="text")  # 'text', 'file', 'system'
     content = Column(Text, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     edited_at = Column(DateTime)
@@ -328,9 +350,9 @@ class ChatMessage(Base):
     metadata = Column(JSON)  # Attachments, reactions, etc.
 
     __table_args__ = (
-        Index('idx_message_sender', 'sender_id', 'timestamp'),
-        Index('idx_message_recipient', 'recipient_id', 'timestamp'),
-        Index('idx_message_channel', 'channel', 'timestamp'),
+        Index("idx_message_sender", "sender_id", "timestamp"),
+        Index("idx_message_recipient", "recipient_id", "timestamp"),
+        Index("idx_message_channel", "channel", "timestamp"),
     )
 
     def __repr__(self):
