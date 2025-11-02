@@ -76,7 +76,7 @@ def get_config() -> Dict[str, Any]:
 
         # Application Settings
         "APP_NAME": os.getenv("APP_NAME", "HODLXXI"),
-        "APP_VERSION": os.getenv("APP_VERSION", "1.0.0-alpha"),
+        "APP_VERSION": os.getenv("APP_VERSION", "1.0.0-beta"),
         "APP_HOST": os.getenv("APP_HOST", "0.0.0.0"),
         "APP_PORT": int(os.getenv("APP_PORT", "5000")),
     }

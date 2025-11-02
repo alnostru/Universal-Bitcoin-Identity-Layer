@@ -207,7 +207,7 @@ def health():
     return jsonify({
         "status": "ok",
         "service": "HODLXXI",
-        "version": "1.0.0-alpha"
+        "version": "1.0.0-beta"
     }), 200
 
 @app.before_request
