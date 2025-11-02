@@ -4,9 +4,10 @@ Audit logging for HODLXXI.
 This is a basic implementation that logs to Python's logging system.
 For production, integrate with structured logging (JSON) and log aggregation systems.
 """
+
 import logging
-from typing import Optional, Dict, Any
 from datetime import datetime
+from typing import Any, Dict, Optional
 
 _logger = logging.getLogger("audit")
 
@@ -18,9 +19,7 @@ def init_audit_logger():
     # Add console handler if not already present
     if not _logger.handlers:
         handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter(
-            '%(asctime)s - AUDIT - %(levelname)s - %(message)s'
-        ))
+        handler.setFormatter(logging.Formatter("%(asctime)s - AUDIT - %(levelname)s - %(message)s"))
         _logger.addHandler(handler)
 
     _logger.info("Audit logger initialized (basic implementation)")
@@ -50,28 +49,20 @@ class AuditLogger:
     def log_auth_attempt(self, user_id: str, method: str, success: bool, ip_address: Optional[str] = None):
         """Log authentication attempt."""
         status = "SUCCESS" if success else "FAILURE"
-        self.logger.info(
-            f"AUTH_ATTEMPT | user={user_id} | method={method} | status={status} | ip={ip_address}"
-        )
+        self.logger.info(f"AUTH_ATTEMPT | user={user_id} | method={method} | status={status} | ip={ip_address}")
 
     def log_token_issued(self, user_id: str, token_type: str, scope: Optional[str] = None):
         """Log token issuance."""
-        self.logger.info(
-            f"TOKEN_ISSUED | user={user_id} | type={token_type} | scope={scope}"
-        )
+        self.logger.info(f"TOKEN_ISSUED | user={user_id} | type={token_type} | scope={scope}")
 
     def log_token_refresh(self, user_id: str, success: bool):
         """Log token refresh attempt."""
         status = "SUCCESS" if success else "FAILURE"
-        self.logger.info(
-            f"TOKEN_REFRESH | user={user_id} | status={status}"
-        )
+        self.logger.info(f"TOKEN_REFRESH | user={user_id} | status={status}")
 
     def log_api_access(self, user_id: str, endpoint: str, method: str, status_code: int):
         """Log API access."""
-        self.logger.info(
-            f"API_ACCESS | user={user_id} | endpoint={endpoint} | method={method} | status={status_code}"
-        )
+        self.logger.info(f"API_ACCESS | user={user_id} | endpoint={endpoint} | method={method} | status={status_code}")
 
     def log_rpc_call(self, method: str, success: bool, error: Optional[str] = None):
         """Log Bitcoin RPC call."""
@@ -83,34 +74,24 @@ class AuditLogger:
 
     def log_security_event(self, event_type: str, severity: str, details: Dict[str, Any]):
         """Log security event."""
-        self.logger.warning(
-            f"SECURITY_EVENT | type={event_type} | severity={severity} | details={details}"
-        )
+        self.logger.warning(f"SECURITY_EVENT | type={event_type} | severity={severity} | details={details}")
 
     def log_signature_verification(self, pubkey: str, success: bool, signature_type: str):
         """Log cryptographic signature verification."""
         status = "SUCCESS" if success else "FAILURE"
-        self.logger.info(
-            f"SIG_VERIFY | pubkey={pubkey[:16]}... | type={signature_type} | status={status}"
-        )
+        self.logger.info(f"SIG_VERIFY | pubkey={pubkey[:16]}... | type={signature_type} | status={status}")
 
     def log_session_created(self, session_id: str, user_id: str):
         """Log session creation."""
-        self.logger.info(
-            f"SESSION_CREATED | session={session_id[:8]}... | user={user_id}"
-        )
+        self.logger.info(f"SESSION_CREATED | session={session_id[:8]}... | user={user_id}")
 
     def log_session_destroyed(self, session_id: str, reason: str = "logout"):
         """Log session destruction."""
-        self.logger.info(
-            f"SESSION_DESTROYED | session={session_id[:8]}... | reason={reason}"
-        )
+        self.logger.info(f"SESSION_DESTROYED | session={session_id[:8]}... | reason={reason}")
 
     def log_rate_limit_exceeded(self, ip_address: str, endpoint: str):
         """Log rate limit violation."""
-        self.logger.warning(
-            f"RATE_LIMIT_EXCEEDED | ip={ip_address} | endpoint={endpoint}"
-        )
+        self.logger.warning(f"RATE_LIMIT_EXCEEDED | ip={ip_address} | endpoint={endpoint}")
 
     def log_error(self, error_type: str, error_msg: str, context: Optional[Dict[str, Any]] = None):
         """Log application error."""
